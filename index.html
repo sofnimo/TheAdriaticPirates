@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Adriatic — Step 0 · palette gate</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink: #ebedea;
+        --ink-dim: #9bb5a8;
+        --panel: rgba(12, 20, 24, 0.86);
+        --pass: #14707c;
+        --fail: #c63427;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #1b1e20;
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+        color: var(--ink);
+      }
+
+      #viewport {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+
+      /* The overlay must sit pixel-exactly on top of the canvas: same fixed box,
+         cells positioned in the same normalised percentages the GL quads use. */
+      #ui { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+
+      .gate-overlay { position: absolute; inset: 0; }
+
+      .gate-cell {
+        position: absolute;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        overflow: hidden;
+      }
+
+      .gate-cell.is-fail { outline: 2px solid var(--fail); outline-offset: -2px; }
+
+      /* CSS ground truth: the right half of the cell, painted by the browser from the
+         same hex. Any visible seam against the WebGL left half is a renderer bug. */
+      .gate-cell-css {
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 50%;
+        height: 100%;
+      }
+
+      .gate-cell-label {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        padding: 4px 6px 5px;
+        font-size: 10px;
+        line-height: 1.25;
+        letter-spacing: 0.01em;
+        mix-blend-mode: normal;
+      }
+
+      .gate-cell-name { opacity: 0.78; font-size: 9px; }
+      .gate-cell-hex { font-weight: 700; font-size: 11px; }
+      .gate-cell-verdict { font-size: 9px; opacity: 0.7; }
+      .gate-cell-verdict.is-fail {
+        opacity: 1;
+        color: #fff;
+        background: var(--fail);
+        align-self: flex-start;
+        padding: 0 4px;
+        border-radius: 2px;
+      }
+
+      .gate-summary {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        display: flex;
+        align-items: baseline;
+        gap: 16px;
+        flex-wrap: wrap;
+        padding: 12px 16px 10px 120px;
+        background: linear-gradient(180deg, rgba(12, 20, 24, 0.92), rgba(12, 20, 24, 0));
+        font-size: 12px;
+      }
+
+      .gate-summary strong {
+        font-size: 13px;
+        padding: 2px 8px;
+        border-radius: 3px;
+        background: var(--pass);
+        color: #ebedea;
+      }
+
+      .gate-summary.is-fail strong { background: var(--fail); }
+      .gate-summary-hint { color: var(--ink-dim); font-size: 11px; }
+
+      .gate-summary-violation {
+        flex-basis: 100%;
+        color: #fff;
+        background: var(--fail);
+        padding: 2px 8px;
+        border-radius: 3px;
+        font-size: 11px;
+      }
+
+      .gate-report {
+        position: absolute;
+        left: 12px;
+        bottom: 12px;
+        max-width: 62vw;
+        max-height: 46vh;
+        overflow: auto;
+        margin: 0;
+        padding: 10px 12px;
+        border-radius: 3px;
+        background: var(--panel);
+        color: var(--ink);
+        font-size: 10.5px;
+        line-height: 1.45;
+        white-space: pre;
+        pointer-events: auto;
+      }
+
+      /* Free-camera readout. Sits above the report panel, on the same left rail, so the
+         gate text and the flight state never overlap. */
+      .freecam-hud {
+        position: absolute;
+        left: 12px;
+        top: 56px;
+        max-width: 62vw;
+        padding: 8px 10px;
+        border-radius: 3px;
+        background: var(--panel);
+        color: var(--ink);
+        font-size: 10.5px;
+        line-height: 1.5;
+        white-space: pre;
+        pointer-events: none;
+      }
+
+      .budget-hud {
+        /* bottom-right: the grid reserves the right band for the gui, so nothing collides */
+        position: fixed;
+        right: 8px;
+        bottom: 8px;
+        min-width: 190px;
+        z-index: 40;
+        padding: 6px 8px;
+        border-radius: 3px;
+        background: var(--panel);
+        font-size: 10px;
+        line-height: 1.5;
+        pointer-events: none;
+      }
+
+      .budget-row { display: flex; gap: 8px; justify-content: space-between; }
+      .budget-label { color: var(--ink-dim); }
+      .budget-row.is-near .budget-value { color: #ddd0a8; }
+      .budget-row.is-over .budget-value { color: var(--fail); }
+
+      .budget-note {
+        margin-top: 4px;
+        padding-top: 4px;
+        border-top: 1px solid rgba(155, 181, 168, 0.25);
+        color: var(--ink-dim);
+        font-size: 9px;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="viewport"></canvas>
+    <div id="ui"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

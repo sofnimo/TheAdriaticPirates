@@ -1,0 +1,25 @@
+{
+  "name": "adriatic",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Three.js flight game world — 1920s-30s Adriatic, Porco Rosso art direction",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "lil-gui": "0.21.0",
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "@types/stats.js": "0.17.4",
+    "@types/three": "0.185.4",
+    "stats.js": "0.17.0",
+    "typescript": "7.0.2",
+    "vite": "8.2.2",
+    "vite-plugin-glsl": "1.6.1"
+  }
+}
