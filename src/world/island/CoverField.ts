@@ -15,15 +15,38 @@ import type { IslandField } from './IslandField';
  *
  * THEY DO NOT SHARE A NOISE SAMPLE. §3.1: "Do not reuse one noise sample at three thresholds.
  * That produces visibly nested contour lines." Each mask starts from its own seed and its own
- * scale; they are correlated only through one very-low-frequency moisture field, which is what
- * lets oaks prefer the greener side of an island without every forest edge tracing a
- * long-grass edge.
+ * scale; dry grass is correlated to the others only through one very-low-frequency moisture
+ * field, which lets it prefer the drier side of an island without tracing anyone's edges.
+ *
+ * TIER C IS THE ONE EXCEPTION, AND IT IS DELIBERATE. Oaks are confined to the long grass: the
+ * forest mask keeps its own seed and its own broad scale, then is cut by tier B. So a forest
+ * edge DOES trace a long-grass edge — that is the intent, trees standing in the grass rather
+ * than on bare limestone — and it costs roughly two thirds of the crowns, because the wooded
+ * fraction is now a fraction of the grass rather than of the whole island. `forestCoverage`
+ * still reads as "of eligible ground"; what changed is what counts as eligible.
  *
  * SUITABILITY IS A MULTIPLIER, NOT A FOURTH MASK. §7.1: multiply by suitability rather than
  * letting noise put oaks on beaches, cliffs or water. Keeping it in its own channel means the
  * shader can apply the same veto to all three tiers, so the boundary where cover stops is the
  * same boundary for every tier and does not have to be maintained three times.
  */
+
+/**
+ * The low end of `longGrassWeight`'s breakup term in land_cover.glsl, `mix(0.75, 1.25, ...)`.
+ *
+ * Carried here rather than derived, because a .ts file and a .glsl file cannot share a
+ * constant. If that mix ever changes, this follows it: it is what makes "wooded" a subset of
+ * "grass that is actually drawn" rather than a subset of "grass on average".
+ */
+const LONG_GRASS_BREAKUP_MIN = 0.75;
+
+/**
+ * Half-width of the treeline's fade at the edge of a long-grass patch, in mask units.
+ *
+ * Narrow on purpose. This is a boundary the eye can see — a grove stopping where the grass
+ * stops — and a wide blend would put a halo of thinning trees on ground that reads as bare.
+ */
+const GRASS_GATE_SOFTNESS = 0.08;
 
 export interface CoverFieldOptions {
   /** Samples per side. Defaults to half the elevation field's, which is ample: these are
@@ -170,9 +193,34 @@ export class CoverField {
         // Oaks want shelter: §7.1's "inlandOrSheltered". The exposure field already knows
         // which flank the bora scours, so the forest reads it rather than re-deriving it.
         const shelter = clamp01(0.62 - this.exposureAt(ix, iz) * 0.38);
+        // OAKS STAND IN THE LONG GRASS AND NOWHERE ELSE.
+        //
+        // This is the one place tier C is deliberately NOT decorrelated from tier B. The rest
+        // of the independence rule still holds — the forest keeps its own seed and its own
+        // 420 m scale, so its regions are its own shape — but that shape is then cut to the
+        // grass. What §3.1 actually warns against is thresholding ONE noise three times, which
+        // draws visibly nested contours; two independent noises intersected draw no such
+        // family of curves, only the ragged overlap of two unrelated patterns.
+        //
+        // Gated on the WORST-CASE breakup, not on the mean. `longGrassWeight` in
+        // land_cover.glsl raggeds the patch edges with `mix(0.75, 1.25, breakup)` and the
+        // overlay then discards below `uLongGrassThreshold`, so a texel whose baked occupancy
+        // only just clears that threshold is grass in some places and bare in others according
+        // to a noise this bake never sees. Requiring it to clear even at 0.75 keeps the crowns
+        // over grass that is actually drawn, instead of leaving a fringe of trees standing on
+        // bare ground wherever the breakup happened to cut the patch back.
+        // The threshold is the LOWER bound of the blend, not its midpoint. Centring it there
+        // let the fade reach below the line and put a handful of crowns on ground the overlay
+        // was not guaranteed to be drawing — few enough to miss by eye, which is exactly why
+        // it is worth pinning: below this occupancy the gate is zero, not merely small.
+        const grassGate = smoothstep(
+          cfg.longGrassThreshold,
+          cfg.longGrassThreshold + GRASS_GATE_SOFTNESS,
+          this.long[i]! * LONG_GRASS_BREAKUP_MIN,
+        );
         this.forest[i] = clamp01(
           smoothstep(forestCut - 0.14, forestCut + 0.14,
-            forestRaw + cfg.moistureBias * (moisture - 0.5)) * suit * shelter,
+            forestRaw + cfg.moistureBias * (moisture - 0.5)) * suit * shelter * grassGate,
         );
       }
     }

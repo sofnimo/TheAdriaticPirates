@@ -90,16 +90,37 @@ export interface IslandCoverConfig {
   canopyLight: number;
   /** STRUCTURAL. Metres per period of `uForestMask`. Broad enough to form groves. */
   forestScale: number;
-  /** STRUCTURAL. 0-1 of eligible ground that is wooded. */
+  /**
+   * STRUCTURAL. 0-1 of eligible ground that is wooded.
+   *
+   * Eligible ground for tier C is the LONG GRASS, not the island — oaks are confined to tier
+   * B (see CoverField's header). So this is a fraction of a fraction, and raising it toward 1
+   * does not spread the forest past the grass, it only fills the grass in until the grove
+   * outlines disappear. To get more trees over the same ground, `hullsPerCell` is the lever.
+   */
   forestCoverage: number;
   /** Live. Soft continuous weight, so density and LOD handoff stay stable. §7.1. */
   forestThreshold: number;
   /** Metres of clearance the treeline keeps beyond the sand band's outer edge. */
   forestSandMargin: number;
 
-  /** STRUCTURAL. Metres per canopy cell. §11: larger than a hull, smaller than a hillside. */
+  /**
+   * STRUCTURAL. Metres per canopy cell. §11: larger than a hull, smaller than a hillside.
+   *
+   * The lower bound is the load-bearing one and it is not decorative: below a crown DIAMETER
+   * the cell stops being a clumping unit and the scatter degenerates into a lattice with one
+   * crown per node. `hullRadius` is 21 m, so 42 m is the floor whatever the density wanted.
+   */
   canopyCellSize: number;
-  /** STRUCTURAL. Overlapping hulls in a fully wooded cell. §7: 1-4. */
+  /**
+   * STRUCTURAL. Overlapping hulls in a fully wooded cell. §7 says 1-4.
+   *
+   * Held at 5, one above that, to carry a deliberate 3x tree count. Density had to come from
+   * somewhere and the two levers are this and `canopyCellSize`; shrinking the cell instead
+   * reached the same count but broke the floor above, which is the more structural of the two
+   * rules. Measured, not derived — the count is not linear in either lever, because `wanted`
+   * is weighted by forest density and rounded stochastically per cell.
+   */
   hullsPerCell: number;
   /** STRUCTURAL. Metres of hull radius before per-instance variation. */
   hullRadius: number;
@@ -158,11 +179,11 @@ export const ISLAND_COVER: IslandCoverConfig = {
 
   longGrass: 0x1f4e38,
   longGrassOffset: 0.45,
-  longGrassScale: 130,
-  longGrassCoverage: 0.5,
-  longGrassThreshold: 0.5,
+  longGrassScale: 280,
+  longGrassCoverage: 0.58,
+  longGrassThreshold: 0.36,
   longGrassBreakupScale: 17,
-  longGrassSandMargin: 14,
+  longGrassSandMargin: 31.5,
 
   canopyDark: 0x1f4e38,
   canopyMid: 0x366f48,
@@ -172,8 +193,8 @@ export const ISLAND_COVER: IslandCoverConfig = {
   forestThreshold: 0.5,
   forestSandMargin: 28,
 
-  canopyCellSize: 64,
-  hullsPerCell: 3,
+  canopyCellSize: 50,
+  hullsPerCell: 5,
   hullRadius: 21,
   hullHeight: 12,
   hullJitter: 0.4,
