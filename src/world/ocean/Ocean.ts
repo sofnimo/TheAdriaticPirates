@@ -142,7 +142,6 @@ export class Ocean {
       // the same world-space field blankets the frame from any camera.
       uGlintRangeFade: { value: new THREE.Vector2(40, 150) },
 
-      uSkyReflectStrength: { value: 0.35 },
       // 1 = sea behaviour for aerial perspective: lightens with distance, keeps saturation.
       uSeaSatHold: { value: 1 },
       // 04 §3.3 negative control. 0 samples the aircraft shadow against the flat base plane,

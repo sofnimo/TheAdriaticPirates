@@ -9,8 +9,8 @@
 // =====================================================================
 // OPEN-SEA FRAGMENT — `02 — Water.md`.
 //
-// Order matters: depth -> continuous colour -> shared gouache ramp -> glints -> sky fresnel
-// -> haze. Colour is decided by depth; the ramp only ever LIGHTS that colour. Getting this
+// Order matters: depth -> continuous colour -> shared gouache ramp -> glints -> foam -> haze.
+// Colour is decided by depth; the ramp only ever LIGHTS that colour. Getting this
 // backwards (lighting first, then tinting by depth) is what turns a gouache sea into a
 // generic PBR one.
 //
@@ -21,7 +21,6 @@
 
 uniform vec3 cLagoonEdge;
 uniform vec3 cSeaShadow;
-uniform float uSkyReflectStrength;
 uniform float uSeaSatHold;
 uniform float uShadowSampleDisplaced;
 
@@ -73,21 +72,28 @@ void main() {
   color = mix(color, glint.rgb, glint.a);
 
   // ---- shoreline foam ---------------------------------------------------------
-  // Laid over the water AFTER the ramp and the glints, and BEFORE the sky fresnel and haze:
+  // Laid over the water AFTER the ramp and the glints, and BEFORE the haze:
   // foam is a surface on the water, so it takes the atmosphere the water takes, but it is not
   // itself lit by the depth ramp — it is white pigment, not sea. 02b §7.1 attaches the shoreline
   // system at exactly this point in the water shader.
   vec4 foam = shoreFoam(vWorldPos.xz, 1.0);
   color = mix(color, foam.rgb, foam.a);
 
-  // ---- sky reflection ---------------------------------------------------------
-  // Schlick-ish Fresnel against the LIVE sky function rather than a baked cubemap: the same
-  // single definition the dome and the haze use, so a retuned sky retunes the water with it.
-  // Contribution stays capped so sea colour dominates in wide shots (00 §3 rule 10).
-  float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.0);
-  vec3 skyRefl = skyGradient(reflect(-viewDir, normal));
-  color = mix(color, skyRefl, fresnel * uSkyReflectStrength);
-
+  // ---- NO SKY REFLECTION ------------------------------------------------------
+  //
+  // There was a Schlick-ish Fresnel here mirroring the live sky into the water, at 0.35. It
+  // has been removed rather than turned down: it was the gloss on the sea.
+  //
+  // The reason it read as gloss is that a Fresnel term is a CONTINUOUS function of viewing
+  // angle, and it climbs hardest exactly where the water occupies most of the frame — the
+  // grazing middle distance. So it laid a smooth sheen right across the sea's flat colour
+  // bands, which is the gradient 00 §3 rule 1 exists to forbid, and it read as varnish over
+  // the paint rather than as water.
+  //
+  // What it was for is still covered. Sun response is the painted glints above, which are
+  // discrete marks rather than a gradient (02 §3), and the sky's own colour still reaches the
+  // water through the haze below, which is a colour lerp and stays banded.
+  //
   // ---- haze, applied once, by the shared chunk --------------------------------
   // satHold=1: the sea lightens with distance but does NOT wash out, which is what the
   // reference frames measure (water holds s=0.91-0.99 to the horizon while distant land

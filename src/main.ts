@@ -328,7 +328,6 @@ if (sceneName === 'palette') {
     glintCoverage: u.uGlintCoverage!.value as number,
     glintStretch: u.uGlintStretch!.value as number,
     glintScale: u.uGlintScale!.value as number,
-    skyReflect: u.uSkyReflectStrength!.value as number,
     hazeStrength: globalUniforms.uHazeStrength.value,
     showReport: query.get('report') !== '0',
     verify: () => runGate(),
@@ -394,12 +393,6 @@ if (sceneName === 'palette') {
       u.uGlintScale!.value = v;
     });
 
-  folder
-    .add(params, 'skyReflect', 0, 1, 0.01)
-    .name('sky fresnel')
-    .onChange((v: number) => {
-      u.uSkyReflectStrength!.value = v;
-    });
   folder
     .add(params, 'hazeStrength', 0, 1, 0.01)
     .name('haze strength')
