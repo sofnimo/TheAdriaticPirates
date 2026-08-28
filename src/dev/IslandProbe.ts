@@ -102,12 +102,24 @@ export class IslandProbe {
     // terrain draw-call budget compares a figure the doc wrote for the colour pass against a
     // frame that contains four passes. Both are reported: the shadow cost is real and should
     // not be able to hide, it just is not the thing this budget line bounds.
-    this.renderer.shadowMap.autoUpdate = false;
+    // BOTH flags have to be cleared. three skips the shadow pass only when `autoUpdate` is
+    // false AND `needsUpdate` is false — and `needsUpdate` is set behind your back whenever
+    // the lights change, which the shadow gate does constantly as it toggles the cascades on
+    // and off. Clearing only `autoUpdate` measured the colour pass correctly on the first gate
+    // run and then silently included all three shadow passes on every run after it, reporting
+    // 61 draw calls against a 40 budget for a frame that draws 16.
+    const shadowMap = this.renderer.shadowMap;
+    const autoWas = shadowMap.autoUpdate;
+    shadowMap.autoUpdate = false;
+    shadowMap.needsUpdate = false;
     this.renderer.info.reset();
     this.renderer.render(this.test.scene, this.test.camera);
     const drawCalls = this.renderer.info.render.calls;
 
-    this.renderer.shadowMap.autoUpdate = true;
+    // And forced back on for the second render, or the maps would still be considered current
+    // and the shadow cost would measure as zero.
+    shadowMap.autoUpdate = autoWas;
+    shadowMap.needsUpdate = true;
     this.renderer.info.reset();
     this.renderer.render(this.test.scene, this.test.camera);
     const shadowCalls = Math.max(0, this.renderer.info.render.calls - drawCalls);

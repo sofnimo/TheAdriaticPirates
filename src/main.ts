@@ -323,6 +323,11 @@ if (sceneName === 'palette') {
     view: (isView(viewParam) ? viewParam : 'cove') as OceanViewName,
     seaState: test.ocean.seaStateName as SeaStateName,
     timeOfDay: 'lateMorning' as TimeOfDayName,
+    sunElevation: test.sun.elevationDeg,
+    sunAzimuth: test.sun.azimuthDeg,
+    // Read back as degrees from the authored cosine, so the slider opens on the real value
+    // rather than on a hardcoded guess that could drift away from 01 §1.2.
+    sunDiscDeg: THREE.MathUtils.radToDeg(Math.acos(globalUniforms.uSunSize.value)),
     edgeNoiseAmount: u.uEdgeNoiseAmount!.value as number,
     edgeNoiseScale: u.uEdgeNoiseScale!.value as number,
     glintCoverage: u.uGlintCoverage!.value as number,
@@ -356,7 +361,44 @@ if (sceneName === 'palette') {
     .name('time of day')
     .onChange((v: TimeOfDayName) => {
       test.sun.apply(v);
+      // A preset carries its own bearing, so the two sliders below have just been moved for
+      // you. Without this they would keep showing the old angles while the sun sat somewhere
+      // else, which makes the panel lie about the thing it exists to report.
+      params.sunElevation = test.sun.elevationDeg;
+      params.sunAzimuth = test.sun.azimuthDeg;
+      elevationCtl.updateDisplay();
+      azimuthCtl.updateDisplay();
       runGate();
+    });
+
+  // --- the sun ---------------------------------------------------------------------------
+  // WHERE THE SUN IS DRAWN AND WHERE THE SHADOWS FALL ARE THE SAME NUMBER.
+  //
+  // These two sliders write `uSunDirection`, and everything that cares reads it: the sky
+  // dome's disc (`skyWithSun`), the shading terminator on every surface, and the cascade fit.
+  // So the disc in the sky is not a marker standing in for the light — it is the light, and
+  // dragging elevation down watches the shadows lengthen away from it.
+  //
+  // The disc is authored at a true 1 degree, which is correct and almost impossible to find
+  // in a 50 degree field of view. The size slider is there to make it findable while working;
+  // it is a viewing aid, not a change to 01 §1.2, which is why it starts at the authored value.
+  const sunFolder = folder.addFolder('sun');
+  const applyAngles = (): void => test.sun.setAngles(params.sunElevation, params.sunAzimuth);
+  const elevationCtl = sunFolder
+    .add(params, 'sunElevation', 0, 90, 0.5)
+    .name('elevation (deg)')
+    .onChange(applyAngles);
+  const azimuthCtl = sunFolder
+    .add(params, 'sunAzimuth', 0, 360, 1)
+    .name('azimuth (deg from N)')
+    .onChange(applyAngles);
+  sunFolder
+    .add(params, 'sunDiscDeg', 0.25, 12, 0.25)
+    .name('disc size (deg)')
+    // The uniform is the COSINE of the half-angle, which runs 0.99985 to 1.0 over the useful
+    // range and is unusable as a slider. Degrees in, cosine out.
+    .onChange((v: number) => {
+      globalUniforms.uSunSize.value = Math.cos(THREE.MathUtils.degToRad(v));
     });
 
   const shelf = folder.addFolder('shelf band');
