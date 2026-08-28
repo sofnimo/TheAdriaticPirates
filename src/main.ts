@@ -13,7 +13,7 @@ import { IslandProbe } from './dev/IslandProbe';
 import { ShoreProbe } from './dev/ShoreProbe';
 import { ShadowProbe } from './dev/ShadowProbe';
 import { FreeCamera } from './app/FreeCamera';
-import { SEA_STATE_NAMES, type SeaStateName } from './art/seaStates';
+import { SEA_STATE_OPTIONS, type SeaStateName } from './art/seaStates';
 import { TIME_OF_DAY_NAMES, type TimeOfDayName } from './art/timeOfDay';
 import { globalUniforms } from './render/shading/ShadingUniforms';
 import { PostChain } from './render/post/PostChain';
@@ -345,7 +345,7 @@ if (sceneName === 'palette') {
     .name('view')
     .onChange((v: OceanViewName) => setView(v));
   folder
-    .add(params, 'seaState', SEA_STATE_NAMES as unknown as string[])
+    .add(params, 'seaState', SEA_STATE_OPTIONS)
     .name('sea state')
     .onChange((v: SeaStateName) => {
       test.ocean.applySeaState(v);

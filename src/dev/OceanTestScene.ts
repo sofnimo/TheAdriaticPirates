@@ -8,7 +8,7 @@ import { TEST_ISLAND_SEED } from '../world/island/IslandSpec';
 import type { CoverField } from '../world/island/CoverField';
 import { ShoreAtlas } from '../world/shore/ShoreAtlas';
 import { makeShoreUniforms, updateFoamLOD, type ShoreUniforms } from '../world/shore/shoreUniforms';
-import { SEA_STATES, swellDirection, type SeaStateName } from '../art/seaStates';
+import { DEFAULT_SEA_STATE, SEA_STATES, swellDirection, type SeaStateName } from '../art/seaStates';
 import { globalUniforms } from '../render/shading/ShadingUniforms';
 import { WaveSurface } from '../world/ocean/waveSurface';
 import { Seaplane } from '../game/flight/Seaplane';
@@ -317,7 +317,7 @@ export class OceanTestScene {
   private view: OceanViewName = 'cove';
   private time = 0;
 
-  constructor(seaState: SeaStateName = 'breeze') {
+  constructor(seaState: SeaStateName = DEFAULT_SEA_STATE) {
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.5, 25000);
 
     this.sky = new SkyDome(this.scene, 10000);

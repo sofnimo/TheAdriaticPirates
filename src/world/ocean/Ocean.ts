@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { COAST, SEA } from '../../art/palette';
 import { GLINT_RULE } from '../../art/seaRamp';
 import { SURFACES } from '../../art/surfaces';
-import { SEA_STATES, swellDirection, waveDirection, type SeaStateName } from '../../art/seaStates';
+import { DEFAULT_SEA_STATE, SEA_STATES, swellDirection, waveDirection, type SeaStateName } from '../../art/seaStates';
 import { OCEAN } from '../../art/budgets';
 import { globalUniforms, shadowUniforms } from '../../render/shading/ShadingUniforms';
 import { DepthField } from '../depth/DepthField';
@@ -44,7 +44,7 @@ export class Ocean {
   constructor(
     scene: THREE.Scene,
     depthField: DepthField,
-    seaState: SeaStateName = 'breeze',
+    seaState: SeaStateName = DEFAULT_SEA_STATE,
     shore?: ShoreUniforms,
   ) {
     this.depthField = depthField;
