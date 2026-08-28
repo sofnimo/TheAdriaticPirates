@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { SURFACES, type SurfaceName, type SurfacePreset } from '../../art/surfaces';
-import { globalUniforms } from './ShadingUniforms';
+import { globalUniforms, shadowUniforms } from './ShadingUniforms';
 
 import GOUACHE_RAMP_GLSL from './chunks/gouache_ramp.glsl';
 import AERIAL_PERSPECTIVE_GLSL from './chunks/aerial_perspective.glsl';
+import CSM_SHADOW_GLSL from './chunks/csm_shadow.glsl';
 
 /**
  * THE ONE PLACE `onBeforeCompile` IS ALLOWED.
@@ -89,8 +90,9 @@ export function createGouacheMaterial(options: GouacheOptions): GouacheMaterial 
   material.surfacePreset = preset;
 
   material.onBeforeCompile = (shader) => {
-    // Shared globals are assigned BY REFERENCE — same object, every material.
-    Object.assign(shader.uniforms, globalUniforms, material.gouacheUniforms);
+    // Shared globals AND the cascade block are assigned BY REFERENCE — same objects, every
+    // material. The cascades may not exist yet; the block does, and gets filled in place.
+    Object.assign(shader.uniforms, globalUniforms, shadowUniforms, material.gouacheUniforms);
 
     // ---- vertex: world position + world normal varyings ----------------------
     shader.vertexShader = shader.vertexShader
@@ -117,6 +119,8 @@ export function createGouacheMaterial(options: GouacheOptions): GouacheMaterial 
           // arrives with it — one definition, not a copy.
           GOUACHE_RAMP_GLSL +
           '\n' +
+          CSM_SHADOW_GLSL +
+          '\n' +
           AERIAL_PERSPECTIVE_GLSL,
       )
       .replace(
@@ -127,21 +131,14 @@ export function createGouacheMaterial(options: GouacheOptions): GouacheMaterial 
   vec3 gouacheV = normalize( cameraPosition - vGouacheWorldPos );
   float gouacheNdotL = dot( gouacheN, normalize( uSunDirection ) );
 
-  // Shadow read straight from three's own shadow map. getShadowMask() is not available
-  // in the physical shader (it ships only in ShaderLib/shadow), so sample directly —
-  // one directional light, which is exactly the rig 04 §1 specifies.
-  float gouacheShadow = 1.0;
-  #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
-    DirectionalLightShadow gouacheDirShadow = directionalLightShadows[ 0 ];
-    gouacheShadow = receiveShadow ? getShadow(
-      directionalShadowMap[ 0 ],
-      gouacheDirShadow.shadowMapSize,
-      gouacheDirShadow.shadowIntensity,
-      gouacheDirShadow.shadowBias,
-      gouacheDirShadow.shadowRadius,
-      vDirectionalShadowCoord[ 0 ]
-    ) : 1.0;
-  #endif
+  // Shadow read from the SAME cascade rig every other surface reads (04 §3.1).
+  //
+  // This used to sample directionalShadowMap[0] directly. That worked while there was one
+  // shadow-casting light in the world; with the cascades there are three, index 0 is whichever
+  // three collected first, and a prop would have taken its shadow from an arbitrary slice of
+  // the camera frustum. Going through the shared chunk also means props and terrain cannot
+  // disagree about where a shadow falls, which is the whole reason 04 §2.2 asks for one chunk.
+  float gouacheShadow = receiveShadow ? sunShadow( vGouacheWorldPos, gouacheN ) : 1.0;
 
   vec3 gouacheShaded = applyGouacheRamp(
     diffuseColor.rgb,

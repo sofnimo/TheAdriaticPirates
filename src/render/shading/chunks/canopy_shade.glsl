@@ -31,9 +31,16 @@ uniform float uDabScale;
  * @param sunDir       normalised, surface toward sun
  * @param worldPos     for the world-anchored dab lookup — never a screen coordinate
  * @param seed         per-hull, so neighbouring crowns do not share a dab phase
+ * @param shadow       0 = fully shadowed, 1 = lit, from `csm_shadow.glsl`
  */
-vec3 canopyStops(vec3 canopyNormal, vec3 sunDir, vec3 worldPos, float seed) {
+vec3 canopyStops(vec3 canopyNormal, vec3 sunDir, vec3 worldPos, float seed, float shadow) {
   float noL = dot(canopyNormal, sunDir);
+
+  // A crown in cast shadow drops to the SHADOW STOP, whole. Not multiplied down, and not
+  // interpolated: 04 §3.3 wants the same binary cut the gouache ramp applies everywhere else,
+  // and §8.2's ladder has an authored tone waiting for exactly this case — the same one tier B
+  // is painted in, so a shadowed canopy and the long grass under it agree.
+  if (step(0.5, shadow) < 0.5) return cCanopyDark;
 
   // Two spatial frequencies (§8.3 rule 1): a broad 20-80 m modulation that splits masses, and
   // the dab shapes themselves at a scale comparable to the masses rather than fine speckle.

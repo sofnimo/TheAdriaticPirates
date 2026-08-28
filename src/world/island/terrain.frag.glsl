@@ -1,4 +1,5 @@
 #include ../../render/shading/chunks/gouache_ramp.glsl;
+#include ../../render/shading/chunks/csm_shadow.glsl;
 #include ../../render/shading/chunks/land_color.glsl;
 #include ../../render/shading/chunks/aerial_perspective.glsl;
 
@@ -21,7 +22,7 @@ void main() {
   vec3 base = landColor(vWorldPos, normal);
 
   float ndotl = dot(normal, normalize(uSunDirection));
-  vec3 color = applyGouacheRamp(base, ndotl, 1.0, normal, viewDir, 0.0);
+  vec3 color = applyGouacheRamp(base, ndotl, sunShadow(vWorldPos, normal), normal, viewDir, 0.0);
   color = applyAerialPerspective(color, vWorldPos, cameraPosition);
 
   gl_FragColor = vec4(color, 1.0);

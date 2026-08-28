@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { LIGHT } from '../../art/budgets';
 import { TIME_OF_DAY, type TimeOfDayName } from '../../art/timeOfDay';
 import { applyTimeOfDayUniforms, globalUniforms, sunDirectionFrom } from '../shading/ShadingUniforms';
+import { ShadowCascades, type ShadowCascadeOptions } from './ShadowCascades';
 
 /**
  * ONE SUN. `04 — Light and Shadow.md` §1: one directional shadow-casting light, no area
@@ -13,52 +13,37 @@ import { applyTimeOfDayUniforms, globalUniforms, sunDirectionFrom } from '../sha
  * applied inside the chunk instead, as a flat band tint (see art/timeOfDay.ts) — a smooth
  * N.y gradient would un-flatten the very bands rule 1 exists to produce.
  *
- * Shadow settings target HARD edges (00 §3 rule 3): near-zero radius, tight frustum,
- * tiny bias. Cascades arrive in Step 5 via three/addons/csm.
+ * THE SUN ITSELF DOES NOT CAST. Shadow casting belongs entirely to `ShadowCascades`, which this
+ * class owns and drives: 04 §3.1 needs several frustums to cover a 200-1500 m camera, and one
+ * light cannot have several. Leaving `castShadow` on here as well would render a fourth depth
+ * map that nothing samples, and would change `NUM_DIR_LIGHT_SHADOWS` under the props' feet.
+ *
+ * What stays here is the LOOK of the light — colour, intensity, direction, time of day — and
+ * the guarantee that the cascades are fitted along the same vector the shading terminator uses,
+ * so the lit side of a hill and the shadow it throws can never disagree.
  */
 
 export interface SunRigOptions {
-  /** Half-extent of the shadow frustum, world units. Keep tight: a wide near/far is the
-   *  #1 cause of both peter-panning and acne (04 §3.2). */
-  shadowExtent?: number;
-  shadowMapSize?: number;
-  /** Distance the light is placed along its direction. Only affects the shadow camera. */
-  distance?: number;
+  readonly cascades?: ShadowCascadeOptions;
 }
 
 export class SunRig {
   readonly light: THREE.DirectionalLight;
   readonly target: THREE.Object3D;
+  readonly shadows: ShadowCascades;
   private preset: TimeOfDayName = 'lateMorning';
-  private readonly distance: number;
 
   constructor(scene: THREE.Scene, options: SunRigOptions = {}) {
-    const shadowExtent = options.shadowExtent ?? 40;
-    const shadowMapSize = options.shadowMapSize ?? 2048;
-    this.distance = options.distance ?? 200;
-
     this.light = new THREE.DirectionalLight(0xfff3dd, 2.0);
-    this.light.castShadow = true;
-
-    const shadow = this.light.shadow;
-    shadow.mapSize.set(shadowMapSize, shadowMapSize);
-    shadow.radius = LIGHT.shadowRadiusRange[0]; // 0 — hard edge, not a penumbra
-    shadow.bias = LIGHT.shadowBiasRange[0]; // -0.0005
-    shadow.normalBias = 0.02;
-
-    const cam = shadow.camera;
-    cam.left = -shadowExtent;
-    cam.right = shadowExtent;
-    cam.top = shadowExtent;
-    cam.bottom = -shadowExtent;
-    cam.near = this.distance - shadowExtent * 2;
-    cam.far = this.distance + shadowExtent * 2;
-    cam.updateProjectionMatrix();
+    // See the header: the cascades own every depth map in the world.
+    this.light.castShadow = false;
 
     this.target = new THREE.Object3D();
     scene.add(this.target);
     this.light.target = this.target;
     scene.add(this.light);
+
+    this.shadows = new ShadowCascades(scene, options.cascades ?? {});
 
     this.apply('lateMorning');
   }
@@ -73,10 +58,14 @@ export class SunRig {
     const p = TIME_OF_DAY[name];
 
     const dir = sunDirectionFrom(p.sun.elevationDeg, p.sun.azimuthDeg);
-    this.light.position.copy(dir).multiplyScalar(this.distance);
+    this.light.position.copy(dir).multiplyScalar(1000);
     this.light.color.set(p.sun.color);
     this.light.intensity = p.sun.intensity;
-    this.light.castShadow = p.sun.castShadow;
+
+    // 04 §1's overcast bora row: "shadow-casting on the directional light can be disabled...
+    // the bora look is flat stepped bands with no cast shadow". The preset says so; the rig
+    // does not decide it.
+    this.shadows.setEnabled(p.sun.castShadow);
 
     // The shared uniform is the same vector the light uses — one source of truth, so the
     // sky's sun disc, the shading terminator and the cast shadow can never disagree.
@@ -84,9 +73,14 @@ export class SunRig {
     applyTimeOfDayUniforms(name);
   }
 
-  /** Keep the shadow frustum centred on a point of interest (the plane, later). */
-  followTarget(point: THREE.Vector3): void {
-    this.target.position.copy(point);
-    this.light.position.copy(globalUniforms.uSunDirection.value).multiplyScalar(this.distance).add(point);
+  /**
+   * Refit the cascades. Call once per frame, before rendering.
+   *
+   * Driven by the CAMERA rather than by a point of interest: §3.1's whole argument is that the
+   * shadow frustums should follow the view, because that is what decides which ground is on
+   * screen and at what texel density it needs to be shadowed.
+   */
+  update(camera: THREE.PerspectiveCamera): void {
+    this.shadows.update(camera, globalUniforms.uSunDirection.value);
   }
 }

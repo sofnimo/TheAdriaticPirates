@@ -4,7 +4,7 @@ import { GLINT_RULE } from '../../art/seaRamp';
 import { SURFACES } from '../../art/surfaces';
 import { SEA_STATES, swellDirection, waveDirection, type SeaStateName } from '../../art/seaStates';
 import { OCEAN } from '../../art/budgets';
-import { globalUniforms } from '../../render/shading/ShadingUniforms';
+import { globalUniforms, shadowUniforms } from '../../render/shading/ShadingUniforms';
 import { DepthField } from '../depth/DepthField';
 import { buildOceanRings, DEFAULT_RING_LEVELS, type OceanRings } from './RingMesh';
 import { buildSeaRampTexture } from './SeaRampTexture';
@@ -145,6 +145,9 @@ export class Ocean {
       uSkyReflectStrength: { value: 0.35 },
       // 1 = sea behaviour for aerial perspective: lightens with distance, keeps saturation.
       uSeaSatHold: { value: 1 },
+      // 04 §3.3 negative control. 0 samples the aircraft shadow against the flat base plane,
+      // which is correct; 1 samples it against the displaced surface, which makes it swim.
+      uShadowSampleDisplaced: { value: 0 },
       // The sea, unlike land, really does merge into the horizon band, so it lifts the
       // ceiling the shared chunk applies to land. Declared after the global uniforms are
       // merged in, below, or it would be overwritten by the shared value.
@@ -156,6 +159,7 @@ export class Ocean {
     const merged = Object.assign(
       {},
       globalUniforms as unknown as OceanUniforms,
+      shadowUniforms as OceanUniforms,
       shore ?? {},
       this.uniforms,
     );

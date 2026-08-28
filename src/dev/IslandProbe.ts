@@ -65,6 +65,8 @@ export interface IslandReport {
 
   triangles: number;
   drawCalls: number;
+  /** Extra draws the three cascades cost. Reported, not gated — see the note in run(). */
+  shadowCalls: number;
   withinBudget: boolean;
 
   pass: boolean;
@@ -93,9 +95,22 @@ export class IslandProbe {
     // counters per frame, which means info.render.calls ACCUMULATES across every render the
     // probe has just done. Reading it directly reported 59 draw calls for a scene that draws
     // seven. Reset, render one frame, read that.
+    //
+    // THE VISIBLE PASS AND THE SHADOW PASS ARE COUNTED SEPARATELY, because they are different
+    // costs and 03 §10.1's number is about the first one. Since 04 §3's cascades arrived, one
+    // `render()` also rasterises the casters into three depth maps, and folding those into the
+    // terrain draw-call budget compares a figure the doc wrote for the colour pass against a
+    // frame that contains four passes. Both are reported: the shadow cost is real and should
+    // not be able to hide, it just is not the thing this budget line bounds.
+    this.renderer.shadowMap.autoUpdate = false;
     this.renderer.info.reset();
     this.renderer.render(this.test.scene, this.test.camera);
     const drawCalls = this.renderer.info.render.calls;
+
+    this.renderer.shadowMap.autoUpdate = true;
+    this.renderer.info.reset();
+    this.renderer.render(this.test.scene, this.test.camera);
+    const shadowCalls = Math.max(0, this.renderer.info.render.calls - drawCalls);
 
     const elongated = anisotropy >= MIN_ANISOTROPY;
     const asymmetric = flank.ratio >= MIN_FLANK_RATIO;
@@ -121,6 +136,7 @@ export class IslandProbe {
       onPalette: palette.hits >= palette.samples * 0.8,
       triangles,
       drawCalls,
+      shadowCalls,
       withinBudget,
       pass:
         elongated && asymmetric && shoreAgrees && tone.stepped &&
@@ -242,6 +258,7 @@ export class IslandProbe {
         ' draw calls (03 §10.1 allows ' + MAX_TRIANGLES.toLocaleString() + ' / ' +
         MAX_DRAW_CALLS + ') — ' + (r.withinBudget ? 'ok' : 'OVER'),
     );
+    l.push('  plus ' + r.shadowCalls + ' draws across the shadow cascades (04 §3.1)');
     return l.join('\n');
   }
 }

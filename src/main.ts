@@ -11,6 +11,7 @@ import { OceanTestScene, type OceanViewName } from './dev/OceanTestScene';
 import { OceanProbe } from './dev/OceanProbe';
 import { IslandProbe } from './dev/IslandProbe';
 import { ShoreProbe } from './dev/ShoreProbe';
+import { ShadowProbe } from './dev/ShadowProbe';
 import { FreeCamera } from './app/FreeCamera';
 import { SEA_STATE_NAMES, type SeaStateName } from './art/seaStates';
 import { TIME_OF_DAY_NAMES, type TimeOfDayName } from './art/timeOfDay';
@@ -240,6 +241,7 @@ if (sceneName === 'palette') {
   const probe = new OceanProbe(engine.renderer, test);
   const islandProbe = new IslandProbe(engine.renderer, test);
   const shoreProbe = new ShoreProbe(engine.renderer, test);
+  const shadowProbe = new ShadowProbe(engine.renderer, test);
 
   // 03 §8's free camera. Constructed here rather than inside the scene because it is a debug
   // input device, not world content, and the scene must stay renderable headlessly.
@@ -700,6 +702,9 @@ if (sceneName === 'palette') {
     // to break the shelf transition from inside the island generator.
     const islandReport = islandProbe.run();
     const shoreReport = shoreProbe.run();
+    // Step 5's gate. Runs before the post gate for the same reason the others do: it restores
+    // the cascade state it toggles, so what is left on screen is the world as configured.
+    const shadowReport = shadowProbe.run();
     // Step 6's gate runs on its own calibration card, not on the world view — see PostProbe's
     // header. It restores every pass toggle it touches, so it is safe to run alongside the
     // others; it is last only so the world frame is what remains on screen afterwards.
@@ -708,10 +713,11 @@ if (sceneName === 'palette') {
       OceanProbe.format(lastReport) + '\n\n' +
       IslandProbe.format(islandReport) + '\n\n' +
       ShoreProbe.format(shoreReport) + '\n\n' +
+      ShadowProbe.format(shadowReport) + '\n\n' +
       PostProbe.format(postReport);
     // Exposed so the headless capture harness can read the gates without scraping console.
     (window as unknown as { __gateText?: string }).__gateText = text;
-    if (lastReport.pass && islandReport.pass && shoreReport.pass && postReport.pass) {
+    if (lastReport.pass && islandReport.pass && shoreReport.pass && shadowReport.pass && postReport.pass) {
       console.log('%cWORLD GATES PASS', 'background:#14707c;color:#ebedea;padding:2px 6px;border-radius:3px');
       console.log(text);
     } else {

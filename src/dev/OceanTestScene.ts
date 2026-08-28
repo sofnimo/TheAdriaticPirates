@@ -321,7 +321,7 @@ export class OceanTestScene {
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.5, 25000);
 
     this.sky = new SkyDome(this.scene, 10000);
-    this.sun = new SunRig(this.scene, { shadowExtent: 60, shadowMapSize: 1024, distance: 400 });
+    this.sun = new SunRig(this.scene, { cascades: { maxDistance: 2500 } });
 
     // Order matters: the archipelago bakes its field first, then the bathymetry is built
     // FROM that mask. One shoreline, two consumers (02b §1.2).
@@ -484,6 +484,9 @@ export class OceanTestScene {
     this.camera.updateMatrixWorld(true);
     // The shared clock, set here where the world clock already lives.
     globalUniforms.uTime.value = this.time;
+    // Cascades are refitted from the camera every frame, BEFORE anything renders: the fit and
+    // the sampling both key off the same matrices, so they must not straddle a draw (04 3.1).
+    this.sun.update(this.camera);
     this.sky.update(this.camera);
     this.ocean.update(this.camera, this.time);
     updateFoamLOD(this.shoreUniforms, this.camera.position.y);

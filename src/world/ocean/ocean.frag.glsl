@@ -1,4 +1,5 @@
 #include ../../render/shading/chunks/gouache_ramp.glsl;
+#include ../../render/shading/chunks/csm_shadow.glsl;
 #include ../../render/shading/chunks/gerstner.glsl;
 #include ../../render/shading/chunks/sea_color.glsl;
 #include ../../render/shading/chunks/glints.glsl;
@@ -22,8 +23,10 @@ uniform vec3 cLagoonEdge;
 uniform vec3 cSeaShadow;
 uniform float uSkyReflectStrength;
 uniform float uSeaSatHold;
+uniform float uShadowSampleDisplaced;
 
 varying vec3 vWorldPos;
+varying vec3 vBasePos;
 
 void main() {
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
@@ -40,7 +43,24 @@ void main() {
   vec3 sunDir = normalize(uSunDirection);
   float ndotl = dot(normal, sunDir);
   vec3 tint = seaShadowTint(depth01, cLagoonEdge, cSeaShadow);
-  vec3 color = applyGouacheRampTinted(base, tint, ndotl, 1.0, normal, viewDir, 0.0);
+
+  // THE SIGNATURE SHOT — 04 §3.3, "the strongest storytelling device you have".
+  //
+  // Two details make it read as a painted silhouette rather than as a shadow-mapped blob, and
+  // both are here rather than in the lookup. It is sampled at `vBasePos`, the UNDISPLACED
+  // surface, so the outline stays rigid instead of rippling with the swell. And the normal
+  // handed to the lookup is straight up, not the wave normal: offsetting along a normal that
+  // is itself oscillating would reintroduce exactly the swimming that sampling the base plane
+  // removed. The hard cut that turns this into a single-tone cut-out lives in the ramp, where
+  // every other surface gets it too.
+  //
+  // `uShadowSampleDisplaced` is the negative control, in the same spirit as `?foam=smooth`:
+  // set to 1 it does the wrong thing on purpose — samples the shadow against the displaced
+  // surface — so the shadow gate can measure that the correct path is measurably steadier
+  // rather than having to pick an absolute threshold for "steady enough" on a moving sea.
+  vec3 shadowPos = mix(vBasePos, vWorldPos, uShadowSampleDisplaced);
+  float shadow = sunShadow(shadowPos, vec3(0.0, 1.0, 0.0));
+  vec3 color = applyGouacheRampTinted(base, tint, ndotl, shadow, normal, viewDir, 0.0);
 
   // ---- painted glints ---------------------------------------------------------
   // `facing` gates glints onto sun-facing wave faces. The half-vector is used only as a

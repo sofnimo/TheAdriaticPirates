@@ -1,4 +1,5 @@
 #include ../../render/shading/chunks/canopy_shade.glsl;
+#include ../../render/shading/chunks/csm_shadow.glsl;
 #include ../../render/shading/chunks/aerial_perspective.glsl;
 
 // =====================================================================
@@ -19,8 +20,9 @@ varying vec3 vCanopyNormal;
 varying float vSeed;
 
 void main() {
+  vec3 canopyN = normalize(vCanopyNormal);
   vec3 color = canopyStops(
-    normalize(vCanopyNormal), normalize(uSunDirection), vWorldPos, vSeed
+    canopyN, normalize(uSunDirection), vWorldPos, vSeed, sunShadow(vWorldPos, canopyN)
   );
   color = applyAerialPerspective(color, vWorldPos, cameraPosition);
 

@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { ISLAND_COVER } from '../../art/islandCover';
 import { ISLANDS } from '../../art/budgets';
 import { clamp01, hash2, rng } from './noise';
+import CANOPY_DEPTH_VERT from './canopy.depth.vert.glsl';
+import CANOPY_DEPTH_FRAG from './canopy.depth.frag.glsl';
 import type { CoverField } from './CoverField';
 
 /**
@@ -159,10 +161,40 @@ export function buildCanopy(cover: CoverField, options: CanopyOptions): CanopyRe
   instanced.setAttribute('aRadius', new THREE.InstancedBufferAttribute(new Float32Array(radii), 3));
   instanced.setAttribute('aSeed', new THREE.InstancedBufferAttribute(new Float32Array(seeds), 1));
 
+  // A REAL BOUNDING SPHERE, so this can be culled like anything else.
+  //
+  // The instances are positioned in the vertex shader, so the base geometry's own sphere is
+  // meaningless and the mesh used to opt out of culling entirely. That was survivable while the
+  // canopy only drew once; with cascaded shadows it draws once per cascade as well, and an
+  // unculled canopy meant every island's crowns were rasterised into all three shadow maps
+  // whether or not they were anywhere near the camera. Computing the extent from the instance
+  // data costs one pass over an array that was just built.
+  const bounds = new THREE.Sphere();
+  if (hulls > 0) {
+    const box = new THREE.Box3();
+    const p = new THREE.Vector3();
+    for (let i = 0; i < hulls; i++) {
+      const r = Math.max(radii[i * 3]!, radii[i * 3 + 1]!, radii[i * 3 + 2]!);
+      p.set(centers[i * 3]!, centers[i * 3 + 1]!, centers[i * 3 + 2]!);
+      box.expandByPoint(p.clone().subScalar(r));
+      box.expandByPoint(p.clone().addScalar(r));
+    }
+    box.getBoundingSphere(bounds);
+  }
+  instanced.boundingSphere = bounds;
+
   const mesh = new THREE.Mesh(instanced, options.material);
-  // Every hull is placed in world space by its own attribute, so the mesh has no meaningful
-  // transform and no meaningful bounding volume of its own.
-  mesh.frustumCulled = false;
+  // See canopy.depth.vert.glsl: without this the whole canopy casts one shadow from the world
+  // origin, because three does not run the canopy vertex shader for the shadow pass.
+  mesh.customDepthMaterial = new THREE.ShaderMaterial({
+    vertexShader: CANOPY_DEPTH_VERT,
+    fragmentShader: CANOPY_DEPTH_FRAG,
+    side: THREE.DoubleSide,
+  });
+  // Culled on the sphere computed above rather than opted out. The mesh transform stays
+  // identity: every hull is already in world space, so object space and world space coincide
+  // and the sphere needs no adjusting.
+  mesh.frustumCulled = hulls > 0;
   mesh.castShadow = true;
   mesh.receiveShadow = false;
 

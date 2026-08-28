@@ -67,6 +67,44 @@ function makeGlobalUniforms(): GlobalUniforms {
 export const globalUniforms: GlobalUniforms = makeGlobalUniforms();
 
 /**
+ * THE CASCADE BLOCK — `04 — Light and Shadow.md` §3, shared the same way the globals are.
+ *
+ * It lives here rather than inside `ShadowCascades` so that a material can bind to it before
+ * any cascade rig exists. Materials are built while a scene is being assembled and the rig is
+ * created partway through that; if the uniform objects were owned by the rig, whichever
+ * materials happened to be constructed first would hold `undefined` and silently never
+ * receive a shadow. `ShadowCascades` fills these in place instead of replacing them, so
+ * binding order stops being something anyone has to think about.
+ *
+ * Defaults are "no shadow anywhere", which is what a scene with no rig should look like.
+ */
+export type ShadowUniforms = Record<string, THREE.IUniform>;
+
+function makeShadowUniforms(): ShadowUniforms {
+  const blank = new THREE.DepthTexture(1, 1, THREE.UnsignedIntType);
+  blank.format = THREE.DepthFormat;
+  blank.compareFunction = THREE.LessEqualCompare;
+  return {
+    uCsmEnabled: { value: 0 },
+    uCsmCount: { value: 0 },
+    uCsmMapSize: { value: 1024 },
+    uCsmBias: { value: 0 },
+    uCsmTexel: { value: new THREE.Vector4(1, 1, 1, 1) },
+    uCsmMap0: { value: blank },
+    uCsmMap1: { value: blank },
+    uCsmMap2: { value: blank },
+    uCsmMap3: { value: blank },
+    uCsmMatrix0: { value: new THREE.Matrix4() },
+    uCsmMatrix1: { value: new THREE.Matrix4() },
+    uCsmMatrix2: { value: new THREE.Matrix4() },
+    uCsmMatrix3: { value: new THREE.Matrix4() },
+  };
+}
+
+/** The one instance. See above for why it is not owned by the rig that writes it. */
+export const shadowUniforms: ShadowUniforms = makeShadowUniforms();
+
+/**
  * Push a time-of-day preset into the shared uniforms. Does not touch the light objects —
  * SunRig owns those and calls this, so direction and colour can never disagree.
  */

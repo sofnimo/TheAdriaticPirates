@@ -48,7 +48,7 @@ export class RampTestScene {
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.5, 25000);
 
     this.sky = new SkyDome(this.scene, 10000);
-    this.sun = new SunRig(this.scene, { shadowExtent: 40, shadowMapSize: 2048, distance: 200 });
+    this.sun = new SunRig(this.scene, { cascades: { maxDistance: 400 } });
 
     // --- ground: shadow receiver, and the surface that recedes to the horizon ---
     this.groundMaterial = createGouacheMaterial({ surface: 'limestone' });
@@ -85,7 +85,8 @@ export class RampTestScene {
       this.scene.add(pillar);
     }
 
-    this.shadowHelper = new THREE.CameraHelper(this.sun.light.shadow.camera);
+    // The near cascade — the one whose fit is worth watching while tuning (04 §3.2).
+    this.shadowHelper = new THREE.CameraHelper(this.sun.shadows.lights[0]!.shadow.camera);
     this.shadowHelper.visible = false;
     this.devOverlay.add(this.shadowHelper);
 
@@ -118,6 +119,7 @@ export class RampTestScene {
   }
 
   update(): void {
+    this.sun.update(this.camera);
     this.sky.update(this.camera);
     this.shadowHelper.update();
   }

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { globalUniforms } from '../../render/shading/ShadingUniforms';
+import { globalUniforms, shadowUniforms } from '../../render/shading/ShadingUniforms';
 import { SURFACES } from '../../art/surfaces';
 import { ISLAND_COVER } from '../../art/islandCover';
 import { buildIslandMesh, type IslandMeshResult } from './IslandMesh';
@@ -83,9 +83,12 @@ export class Island {
       uRimStrength: { value: surface.rimStrength },
     };
 
+    // The cascade block joins the globals: same objects, every land material, so a shadow
+    // cannot fall in one place on the ground and another on the grass standing in it.
     const shared = (): CoverUniforms => Object.assign(
       {},
       globalUniforms as unknown as CoverUniforms,
+      shadowUniforms as CoverUniforms,
       rampUniforms,
       coverUniforms,
     );
