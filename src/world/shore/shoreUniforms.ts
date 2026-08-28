@@ -33,8 +33,10 @@ export function makeShoreUniforms(atlas: ShoreAtlas): ShoreUniforms {
     // is a steady band. It blends between, so flying in never shows a switch.
     uFoamCrestNear: { value: 180 },
     uFoamCrestFar: { value: 600 },
-    // Fetch below which a coast does not foam at all. The lee is glassy, not lightly flecked.
-    uFoamExposure: { value: 0.35 },
+    // Fetch below which a coast does not foam at all, and it is set high on purpose. The lee
+    // is glassy, not lightly flecked, so this asks for a coast the swell plainly reaches
+    // rather than one it merely wraps a little energy around.
+    uFoamExposure: { value: 0.6 },
     uRunupSpeed: { value: 0.62 },
     uRunupFreq: { value: 0.12 },
     uFoamSteps: { value: 3 },

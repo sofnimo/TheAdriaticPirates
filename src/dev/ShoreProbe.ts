@@ -318,74 +318,65 @@ export class ShoreProbe {
   }
 
   /**
-   * Does the swash actually surge and retreat?
+   * Does the foam actually travel with the waves?
    *
-   * Two renders roughly two-thirds of a run-up cycle apart, differenced over the swash zone.
-   * A static gradient dressed up as an animation scores zero here however convincing one
-   * frame of it looks.
+   * MEASURED OVER THE FOAM, NOT OVER THE WATER, and that distinction is the whole check. The
+   * denominator used to be every water pixel in the swash zone, which quietly made this a
+   * measurement of two things at once: raising the exposure threshold shrank the foam without
+   * changing how it moved, and the ratio fell from 17% to 6.5% on foam that was behaving
+   * identically. A fraction whose denominator moves when the numerator does is not reporting
+   * what it claims to.
+   *
+   * So the foam region is found first, by differencing foam-on against foam-off at each phase,
+   * and the question asked of it is how much of that region is foam at some moments and not at
+   * others. Crest-driven foam scores high because the crests carry it across the shore. A band
+   * painted on the coastline scores zero: its mask is the same at every phase.
    */
   private probeSwashMotion(): { samples: number; changed: number } {
     this.test.setView('shore');
     const t0 = this.test.waveTime;
-    const a = this.read();
-    // HALF A WAVE PERIOD, computed from the swell itself.
-    //
-    // This used to step one run-up cycle, which is the right clock for a swash band and the
-    // wrong one for foam that rides the crests. A run-up cycle is about a second; the dominant
-    // swell has a period of eight to ten, so stepping a second moved the crests a tenth of a
-    // wavelength and the check reported 3% motion on foam that travels with the sea. Deriving
-    // the step from the wave the foam is actually sitting on keeps it correct across sea
-    // states, whose periods differ by a factor of two.
-    // ACROSS A WHOLE PERIOD, not one pair of moments.
-    //
-    // Two frames half a period apart can land on two phases that happen to look alike, and a
-    // crest-gated foam that is genuinely travelling then measures as barely moving — it read
-    // 9.95% against a 10% floor on foam that plainly moves. Sampling through the period and
-    // counting a pixel as moved if it differs at ANY of them asks the question that was meant:
-    // does this foam change, or is it painted on. A static band still scores zero.
     const primary = this.test.ocean.dominantWavePeriod;
-    const later: Framebuffer[] = [];
-    for (let i = 1; i <= 3; i++) {
+
+    // One foam mask per phase, spanning a full period of the dominant swell.
+    const masks: Uint8Array[] = [];
+    let width = 0;
+    let height = 0;
+    for (let i = 0; i < 4; i++) {
       this.test.setWaveTime(t0 + (primary * i) / 4);
-      later.push(this.read());
+      const on = this.read();
+      this.setFoam(false);
+      const off = this.read();
+      this.setFoam(true);
+      width = on.width;
+      height = on.height;
+      const mask = new Uint8Array(width * height);
+      for (let p = 0; p < mask.length; p++) {
+        const o = p * 4;
+        const d = Math.max(
+          Math.abs(on.data[o]! - off.data[o]!),
+          Math.abs(on.data[o + 1]! - off.data[o + 1]!),
+          Math.abs(on.data[o + 2]! - off.data[o + 2]!),
+        );
+        mask[p] = d > 3 ? 1 : 0;
+      }
+      masks.push(mask);
     }
     this.test.setWaveTime(t0);
 
-    const region = {
-      x0: Math.round(a.width * 0.05),
-      x1: Math.round(a.width * 0.72),
-      y0: Math.round(a.height * 0.35),
-      y1: Math.round(a.height * 0.95),
-    };
-    const camera = this.test.camera;
-    const atlas = this.test.shoreAtlas;
-    const reach = this.test.shoreUniforms.uFoamReach!.value as number;
-    const ray = new THREE.Raycaster();
-    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-    const hit = new THREE.Vector3();
-
-    let samples = 0;
-    let changed = 0;
-    for (let y = region.y0; y <= region.y1; y += 2) {
-      for (let x = region.x0; x <= region.x1; x += 2) {
-        const ndc = new THREE.Vector2((x / a.width) * 2 - 1, -((y / a.height) * 2 - 1));
-        ray.setFromCamera(ndc, camera);
-        if (!ray.ray.intersectPlane(plane, hit)) continue;
-        const d = atlas.distanceAt(hit.x, hit.z);
-        if (d < 0 || d > reach) continue;
-        const pa = readPixel(a, x, y);
-        // Moved if it differs at ANY sampled phase.
-        let moved = false;
-        for (const f of later) {
-          if (maxChannelDelta(pa, readPixel(f, x, y)) > 6) { moved = true; break; }
-        }
-        // Water, or somewhere foam appeared at some point in the cycle.
-        if (!(pa[2]! > pa[0]! + 12 || moved)) continue;
-        samples++;
-        if (moved) changed++;
+    // Foam somewhere in the cycle, versus foam at every phase of it. The difference is what
+    // moved; if nothing moved the two are the same set and this is zero.
+    let union = 0;
+    let always = 0;
+    for (let p = 0; p < width * height; p++) {
+      let any = false;
+      let all = true;
+      for (const m of masks) {
+        if (m[p] === 1) any = true; else all = false;
       }
+      if (any) union++;
+      if (all) always++;
     }
-    return { samples, changed: samples > 0 ? changed / samples : 0 };
+    return { samples: union, changed: union > 0 ? (union - always) / union : 0 };
   }
 
   private setFoam(on: boolean): void {

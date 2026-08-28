@@ -39,6 +39,9 @@ export interface ShelterFieldOptions {
   readonly fullFetch?: number;
 }
 
+/** Half-angle of the arrival fan, radians. About twenty degrees either side of the mean. */
+const SPREAD_RAD = 0.35;
+
 export class ShelterField {
   readonly resolution: number;
   fullFetch: number;
@@ -91,8 +94,21 @@ export class ShelterField {
     const mps = this.metresPerSample;
     const len = Math.hypot(dirX, dirZ) || 1;
     // Upwind: back toward where the swell came from.
-    const ux = -dirX / len;
-    const uz = -dirZ / len;
+    const bx = -dirX / len;
+    const bz = -dirZ / len;
+
+    // ARRIVAL BEARINGS, not one. Real swell reaches a point across a spread of directions, so
+    // a place just past the end of a headland is shadowed for part of that spread even though
+    // the centre bearing runs clear past the rock. Taking the SHORTEST fetch over the fan is
+    // what widens a wind shadow around the tips of an island, which is exactly where the last
+    // of the lee foam was surviving — on a single bearing those points read as open sea,
+    // because along that one line they are.
+    const bearings: Array<[number, number]> = [];
+    for (const a of [-SPREAD_RAD, 0, SPREAD_RAD]) {
+      const c = Math.cos(a);
+      const s = Math.sin(a);
+      bearings.push([bx * c - bz * s, bx * s + bz * c]);
+    }
 
     // One sample per grid cell along the ray. Finer buys nothing — the land mask it is asking
     // about is itself only resolved to a few metres, and the answer is a distance in hundreds.
@@ -105,20 +121,43 @@ export class ShelterField {
         const i = iz * n + ix;
         const x0 = this.originX + ix * mps;
 
-        // Land has no sea state. Left at 0 it would also drag the shoreline's own water toward
-        // flat through the texture's linear filter, so it takes the open-sea value and lets the
-        // march decide what the water beside it does.
-        if (this.island.isLand(x0, z0)) {
-          this.exposure[i] = 1;
-          continue;
-        }
-
+        // LAND IS MARCHED TOO, and that is not a detail.
+        //
+        // Land has no sea state of its own, so the first version simply stamped it as fully
+        // exposed. That is a constant, and this texture is sampled bilinearly on a 32 m grid —
+        // so every shoreline texel dragged "open sea" into the water beside it, on BOTH sides
+        // of an island. The innermost thirty metres of the surf band is exactly where that
+        // bleed lands, so the lee of an island grew a rim of foam around a shore the swell
+        // never reaches.
+        //
+        // Marching land like anything else makes the value continuous across the coastline in
+        // the right direction: a texel on the windward shore marches out to open sea and reads
+        // exposed, matching the water in front of it; one on the lee marches straight into the
+        // island behind it and reads sheltered, matching the water there. Nothing to bleed.
+        // THE RAY HAS WIDTH, and without it the shadows leak.
+        //
+        // A zero-width ray stepping 32 m at a time slips past anything narrow or obliquely
+        // presented — a spit, a headland the march grazes, the tapering end of an island — and
+        // the water behind comes back reading as open sea. That put foam on lee shores which
+        // no amount of raising the exposure threshold could remove, because the field was not
+        // reporting weak shelter there, it was reporting none.
+        //
+        // Testing a lateral offset either side closes it, and is the better physics anyway:
+        // swell is stopped by an obstruction of some width, not by a mathematical line, and it
+        // spreads as it passes one. The width grows with distance for the same reason.
         let fetch = this.fullFetch;
-        for (let s = 1; s <= maxSteps; s++) {
-          const d = s * step;
-          if (this.island.isLand(x0 + ux * d, z0 + uz * d)) {
-            fetch = d;
-            break;
+        for (const [ux, uz] of bearings) {
+          for (let s = 1; s <= maxSteps; s++) {
+            const d = s * step;
+            if (d >= fetch) break;
+            const width = step * 0.5 + d * 0.08;
+            for (let k = -1; k <= 1; k++) {
+              if (this.island.isLand(x0 + ux * d - uz * width * k, z0 + uz * d + ux * width * k)) {
+                fetch = d;
+                break;
+              }
+            }
+            if (fetch === d) break;
           }
         }
 
