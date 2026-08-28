@@ -97,9 +97,16 @@ vec3 applyGouacheRampTinted(
   }
 
   // Rim / backlight: a thin painted edge, hard-shouldered by the smoothstep window.
-  float rim = pow(1.0 - clamp(dot(worldNormal, viewDir), 0.0, 1.0), uRimPower);
-  rim = smoothstep(0.55, 0.85, rim) * uRimStrength;
-  shaded += uRimColor * rim;
+  //
+  // Skipped outright where a surface has turned it off, rather than multiplied by zero. The
+  // branch is on a uniform, so it is coherent across the draw and costs nothing, and the two
+  // surfaces that set the strength to zero — the sea and the aircraft — are between them most
+  // of the pixels on screen.
+  if (uRimStrength > 0.0) {
+    float rim = pow(1.0 - clamp(dot(worldNormal, viewDir), 0.0, 1.0), uRimPower);
+    rim = smoothstep(0.55, 0.85, rim) * uRimStrength;
+    shaded += uRimColor * rim;
+  }
 
   return shaded;
 }

@@ -43,9 +43,16 @@ export const SURFACES = Object.freeze({
     shadowTintMix: 0.85,
     rampSteps: 3,
     rimColor: SEA.crestHigh.hex, // #e7e6eb foam-white
-    rimStrength: 0.15,
+    // ZERO, and the old note beside it said why before the ocean existed: "rim handed off to
+    // 02_WATER.md glints once the ocean exists". That handoff never happened — the glints
+    // landed and the rim stayed on underneath them, so the sea carried two sun responses at
+    // once. The rim is the wrong one of the two to keep: it is a smooth `pow` of the view
+    // angle, so it draws a soft gradient along every wave silhouette, where the glints are the
+    // discrete painted marks 02 §3 actually specifies. Same reasoning as the aircraft row
+    // below, which has run at zero from the start.
+    rimStrength: 0,
     rimPower: 3.5,
-    note: 'Rim handed off to 02_WATER.md glints once the ocean exists.',
+    note: 'No rim: the sun response on water is 02 §3\'s painted glints, and was always meant to be.',
   }),
 
   cloud: preset({
