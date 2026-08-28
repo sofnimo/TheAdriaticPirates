@@ -1,132 +1,188 @@
 import * as THREE from 'three';
-import { LAND } from '../../art/palette';
-import { SURFACES } from '../../art/surfaces';
 import { globalUniforms } from '../../render/shading/ShadingUniforms';
-import { BiomeField } from './BiomeField';
-import { IslandField } from './IslandField';
+import { SURFACES } from '../../art/surfaces';
+import { ISLAND_COVER } from '../../art/islandCover';
 import { buildIslandMesh, type IslandMeshResult } from './IslandMesh';
-import { PUNTA_SEVERA, type IslandSpec } from './IslandSpec';
+import { buildCanopy, type CanopyResult } from './Canopy';
+import type { CoverField } from './CoverField';
+import type { IslandBounds, IslandField } from './IslandField';
+import type { IslandSpec } from './IslandSpec';
+import type { CoverUniforms } from './coverUniforms';
 import type { ShoreUniforms } from '../shore/shoreUniforms';
 
-import ISLAND_VERT from './island.vert.glsl';
-import ISLAND_FRAG from './island.frag.glsl';
+import TERRAIN_VERT from './terrain.vert.glsl';
+import TERRAIN_FRAG from './terrain.frag.glsl';
+import OVERLAY_VERT from './overlay.vert.glsl';
+import OVERLAY_FRAG from './overlay.frag.glsl';
+import CANOPY_VERT from './canopy.vert.glsl';
+import CANOPY_FRAG from './canopy.frag.glsl';
 
 /**
- * ONE HAND-AUTHORED ISLAND — Step 3.
+ * ONE ISLAND'S DRAW CALLS — the four-tier stack of `05 §3`, assembled.
  *
- * Owns the baked field, the mesh and the material. The field is the interesting part: the
- * sea's bathymetry reads the SAME land mask this mesh was built from, so the shore the player
- * flies over and the shore the water shelves against cannot drift apart. `02b — Coastal
- * Waves.md` §1.2 makes that a requirement; here it is satisfied by there being one array.
+ *   A0/A1  the terrain mesh, base colour and dried-grass sublayer   (`terrain.*.glsl`)
+ *   B      the raised long-grass overlay, on the SAME geometry      (`overlay.*.glsl`)
+ *   C      instanced oak canopy hulls                               (`canopy.*.glsl`)
  *
- * The shading is the shared gouache chunk, unforked. `terrain_color.glsl` supplies the base
- * colour and stops there.
+ * TIER B SHARES THE BUFFER, IT DOES NOT COPY IT. `overlayMesh` is a second `THREE.Mesh` over
+ * the very same `BufferGeometry` object as the terrain. §5 lists "overlay seams or hovers" as
+ * the tier's characteristic failure and gives its cause as the two layers disagreeing about
+ * height or LOD; two meshes over one buffer cannot disagree, because there is one set of
+ * vertices. The separation between them is the vertex shader's normal offset and nothing else.
+ *
+ * ALL THREE MATERIALS SHARE ONE UNIFORM OBJECT GRAPH. The cover block, the shore block and the
+ * global sky/sun block are assigned by reference, so a debug-UI edit moves every tier in the
+ * same frame. §5's "patch boundaries swim" has the same root cause as the seam: layers reading
+ * different numbers for the same field.
  */
+
+export interface IslandOptions {
+  readonly field: IslandField;
+  readonly cover: CoverField;
+  readonly coverUniforms: CoverUniforms;
+  /** Index into the field's layout order. Bounds and canopy ownership key off it. */
+  readonly index: number;
+  /** Metres per mesh segment. The triangle budget is spent through this. */
+  readonly metresPerSegment?: number;
+  readonly maxSegments?: number;
+  readonly maxHulls?: number;
+}
+
 export class Island {
   readonly spec: IslandSpec;
-  readonly field: IslandField;
-  /** 03 §7's cover assignment, baked once. The vegetation placer reads this same object. */
-  readonly biomes: BiomeField;
-  readonly mesh: THREE.Mesh;
-  readonly material: THREE.ShaderMaterial;
+  readonly group = new THREE.Group();
   readonly meshInfo: IslandMeshResult;
+  readonly terrainMesh: THREE.Mesh;
+  readonly overlayMesh: THREE.Mesh;
+  readonly canopy: CanopyResult;
 
-  constructor(
-    scene: THREE.Scene,
-    spec: IslandSpec = PUNTA_SEVERA,
-    worldSize = 4096,
-  ) {
-    this.spec = spec;
-    this.field = new IslandField(spec, {
-      // Matches the bathymetry's 1024 exactly. At 512 the two grids disagreed on 38 texels
-      // along the coast — not a real difference of opinion about where the shore is, just
-      // resampling: an 8 m island texel maps to four 4 m depth texels and `landAt`'s nearest
-      // lookup can round to the neighbour. Equal resolutions make the agreement exact rather
-      // than approximate, which is the only version of that claim worth gating on.
-      resolution: 1024,
-      worldSize,
-      originX: -worldSize / 2,
-      originZ: -worldSize / 2,
+  readonly terrainMaterial: THREE.ShaderMaterial;
+  readonly overlayMaterial: THREE.ShaderMaterial;
+  readonly canopyMaterial: THREE.ShaderMaterial;
+
+  constructor(options: IslandOptions) {
+    const { field, cover, coverUniforms, index } = options;
+    this.spec = field.specs[index] ?? field.spec;
+
+    const bounds: IslandBounds | undefined = field.islandBounds[index] ?? undefined;
+    this.meshInfo = buildIslandMesh(field, {
+      ...(bounds ? { bounds } : {}),
+      ...(options.metresPerSegment !== undefined ? { metresPerSegment: options.metresPerSegment } : {}),
+      ...(options.maxSegments !== undefined ? { maxSegments: options.maxSegments } : {}),
     });
-    // Biome before mesh: the terrain material samples the baked map, so it has to exist
-    // before the material that reads it. Same ordering rule as the shore atlas, one field on.
-    this.biomes = new BiomeField(this.field, { cellSize: 55 });
-    this.meshInfo = buildIslandMesh(this.field);
 
-    const surface = SURFACES.limestone;
+    const surface = SURFACES.limestone ?? SURFACES.openSea;
+    // The ramp row every land tier shares. Terrain and overlay both read it; the canopy does
+    // not go through the ramp at all (§8.2), so it never sees these.
+    const rampUniforms: CoverUniforms = {
+      uRampSteps: { value: surface.rampSteps },
+      uShadowTint: { value: new THREE.Color(surface.shadowTint) },
+      uShadowTintMix: { value: surface.shadowTintMix },
+      uRimColor: { value: new THREE.Color(surface.rimColor) },
+      uRimPower: { value: surface.rimPower },
+      uRimStrength: { value: surface.rimStrength },
+    };
 
-    this.material = new THREE.ShaderMaterial({
-      uniforms: Object.assign(
-        {
-          // Shared gouache chunk, limestone row of 04 §2.3. Not a forked ramp — the same
-          // chunk the sea, and later the clouds and foliage, run through.
-          uRampSteps: { value: surface.rampSteps },
-          uShadowTint: { value: new THREE.Color(surface.shadowTint) },
-          uShadowTintMix: { value: surface.shadowTintMix },
-          uRimColor: { value: new THREE.Color(surface.rimColor) },
-          uRimPower: { value: surface.rimPower },
-          uRimStrength: { value: surface.rimStrength },
+    const shared = (): CoverUniforms => Object.assign(
+      {},
+      globalUniforms as unknown as CoverUniforms,
+      rampUniforms,
+      coverUniforms,
+    );
 
-          // 03 §7.2's palette anchors, verbatim from 00 §2.
-          cBeach: { value: new THREE.Color(LAND.sand.hex) },
-          cRockLit: { value: new THREE.Color(LAND.limestoneLit.hex) },
-          cRockShadow: { value: new THREE.Color(LAND.limestoneStrata.hex) },
-          cRockDark: { value: new THREE.Color(LAND.limestoneShadowDeep.hex) },
-          cMacchia: { value: new THREE.Color(LAND.scrubOlivePale.hex) },
-          cPasture: { value: new THREE.Color(LAND.pastureDry.hex) },
-          cForest: { value: new THREE.Color(LAND.forestDense.hex) },
-          cForestSparse: { value: new THREE.Color(LAND.forestSparse?.hex ?? 0x45764e) },
-          cTerrace: { value: new THREE.Color(LAND.scrubOlive.hex) },
-
-          // 03 §7.3: cells larger than any building or tree cluster, smaller than a hillside.
-          // The cell ASSIGNMENT now lives in BiomeField; what stays in the shader is the
-          // few-metre boundary wobble, which has to be sub-texel to be worth having.
-          uBiomeCellSize: { value: this.biomes.cellSize },
-          uBiomeEdgeWobble: { value: 5 },
-          uBiomeMap: { value: this.biomes.texture },
-          uBiomeMapOrigin: { value: new THREE.Vector2(...this.biomes.mapOrigin) },
-          uBiomeMapSize: { value: this.biomes.mapSize },
-          uStrataSpacing: { value: spec.strataSpacing },
-          uPeakHeight: { value: spec.peakHeight },
-        },
-        globalUniforms as unknown as Record<string, THREE.IUniform>,
-      ),
-      vertexShader: ISLAND_VERT,
-      fragmentShader: ISLAND_FRAG,
+    this.terrainMaterial = new THREE.ShaderMaterial({
+      uniforms: shared(),
+      vertexShader: TERRAIN_VERT,
+      fragmentShader: TERRAIN_FRAG,
       side: THREE.FrontSide,
-      toneMapped: false, // colour is authored end-to-end; see RendererConfig
+      toneMapped: false,
     });
 
-    this.mesh = new THREE.Mesh(this.meshInfo.geometry, this.material);
-    this.mesh.name = 'Island:' + spec.name;
-    this.mesh.castShadow = true;
-    this.mesh.receiveShadow = true;
-    scene.add(this.mesh);
+    this.overlayMaterial = new THREE.ShaderMaterial({
+      uniforms: shared(),
+      vertexShader: OVERLAY_VERT,
+      fragmentShader: OVERLAY_FRAG,
+      side: THREE.FrontSide,
+      toneMapped: false,
+      // §5's fix order: the geometric offset in the vertex shader does the real work, and this
+      // is the small safety bias on top for the places the taper has pulled the offset to zero.
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+
+    this.canopyMaterial = new THREE.ShaderMaterial({
+      uniforms: shared(),
+      vertexShader: CANOPY_VERT,
+      fragmentShader: CANOPY_FRAG,
+      // A dome has no back faces worth drawing, but its rim is open and a hull straddling a
+      // ridge can be seen through that opening from below. Cheaper to draw both sides of a
+      // seven-sided dome than to close it.
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+
+    this.terrainMesh = new THREE.Mesh(this.meshInfo.geometry, this.terrainMaterial);
+    this.terrainMesh.castShadow = true;
+    this.terrainMesh.receiveShadow = true;
+
+    // The same geometry object, deliberately. See the header.
+    this.overlayMesh = new THREE.Mesh(this.meshInfo.geometry, this.overlayMaterial);
+    this.overlayMesh.castShadow = false;
+    this.overlayMesh.receiveShadow = true;
+    // Drawn after the base, so its discarded fragments leave the base's depth untouched.
+    this.overlayMesh.renderOrder = 1;
+
+    this.canopy = buildCanopy(cover, {
+      material: this.canopyMaterial,
+      owner: index,
+      ...(options.maxHulls !== undefined ? { maxHulls: options.maxHulls } : {}),
+    });
+    this.canopy.mesh.renderOrder = 2;
+
+    this.group.name = this.spec.name;
+    this.group.add(this.terrainMesh, this.overlayMesh, this.canopy.mesh);
+  }
+
+  get bounds(): IslandMeshResult['bounds'] {
+    return this.meshInfo.bounds;
   }
 
   get triangles(): number {
-    return this.meshInfo.triangles;
+    return this.meshInfo.triangles + this.canopy.triangles;
   }
 
-  /** The land mask query the depth field consumes. One owner, one array. */
-  landAt = (x: number, z: number): boolean => this.field.isLand(x, z);
-
   /**
-   * Attach the shoreline block after construction.
+   * Give the land materials the shoreline block.
    *
-   * Deferred rather than passed to the constructor because the atlas is baked FROM this
-   * island's own field, so it cannot exist yet when the island is being built. 02b §7.1 calls
-   * the shoreline system a post-process stage of the island pipeline, and this is that
-   * ordering made explicit rather than worked around.
+   * Late, because the atlas is baked FROM this island — `land_cover.glsl` reads the signed
+   * shore distance to know how far inland a fragment is, and that field cannot exist until the
+   * land mask does. Assigned by reference into the live uniform objects, so the water and the
+   * land are reading the same run-up phase rather than two copies of it.
    */
   attachShore(shore: ShoreUniforms): void {
-    Object.assign(this.material.uniforms, shore);
-    this.material.needsUpdate = true;
+    for (const material of [this.terrainMaterial, this.overlayMaterial, this.canopyMaterial]) {
+      Object.assign(material.uniforms, shore);
+      material.needsUpdate = true;
+    }
+  }
+
+  /** Tier B is expensive and the debug UI turns it off; tier C likewise. */
+  setTierVisibility(overlay: boolean, canopy: boolean): void {
+    this.overlayMesh.visible = overlay;
+    this.canopy.mesh.visible = canopy;
   }
 
   dispose(): void {
     this.meshInfo.geometry.dispose();
-    this.material.dispose();
-    this.biomes.dispose();
+    this.canopy.mesh.geometry.dispose();
+    this.terrainMaterial.dispose();
+    this.overlayMaterial.dispose();
+    this.canopyMaterial.dispose();
   }
+}
+
+/** The hull count the whole tile is allowed, divided by land area. Used by `Archipelago`. */
+export function hullBudget(share: number): number {
+  return Math.max(200, Math.floor(ISLAND_COVER.canopyMaxHulls * share));
 }

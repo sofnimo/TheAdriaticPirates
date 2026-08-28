@@ -5,13 +5,13 @@ import { RENDERER_CONTRACT } from './app/RendererConfig';
 import { PaletteSwatchGate } from './dev/PaletteSwatchGate';
 import { RampTestScene } from './dev/RampTestScene';
 import { RampProbe } from './dev/RampProbe';
+import { ISLAND_COVER } from './art/islandCover';
+import { TEST_ISLAND_SEED } from './world/island/IslandSpec';
 import { OceanTestScene, type OceanViewName } from './dev/OceanTestScene';
 import { OceanProbe } from './dev/OceanProbe';
 import { IslandProbe } from './dev/IslandProbe';
 import { ShoreProbe } from './dev/ShoreProbe';
-import { VegetationProbe } from './dev/VegetationProbe';
 import { FreeCamera } from './app/FreeCamera';
-import { LOD } from './world/vegetation/VegetationSpec';
 import { SEA_STATE_NAMES, type SeaStateName } from './art/seaStates';
 import { TIME_OF_DAY_NAMES, type TimeOfDayName } from './art/timeOfDay';
 import { globalUniforms } from './render/shading/ShadingUniforms';
@@ -240,7 +240,6 @@ if (sceneName === 'palette') {
   const probe = new OceanProbe(engine.renderer, test);
   const islandProbe = new IslandProbe(engine.renderer, test);
   const shoreProbe = new ShoreProbe(engine.renderer, test);
-  const vegProbe = new VegetationProbe(engine.renderer, test);
 
   // 03 §8's free camera. Constructed here rather than inside the scene because it is a debug
   // input device, not world content, and the scene must stay renderable headlessly.
@@ -312,7 +311,7 @@ if (sceneName === 'palette') {
   const viewParam = query.get('view');
   const VIEW_NAMES: OceanViewName[] = [
     'cove', 'shelf', 'skim', 'island', 'profile', 'canopy', 'shore',
-    'topdown', 'low', 'high', 'free',
+    'topdown', 'low', 'high', 'cockpit', 'free',
   ];
   const isView = (v: string | null): v is OceanViewName =>
     v !== null && (VIEW_NAMES as string[]).includes(v);
@@ -460,45 +459,171 @@ if (sceneName === 'palette') {
     .name('animate grain (sabotage)')
     .onChange((v: boolean) => post.setGrainAnimateSeed(v ? 1 : 0));
 
-  // --- vegetation (Step 3b) --------------------------------------------------------------
-  const vegParams = {
-    visible: true,
-    canopyMass: true,
-    density: 1,
-    wind: 1,
-    lod: true,
-    nearRange: LOD.nearRange,
-    farRange: LOD.farRange,
+  // --- land cover ---------------------------------------------------------------------
+  // Four folders for `05 — Distant Terrain Layering.md`'s four tiers, in the order they
+  // stack: A0 ground, A1 dried grass (a colour sublayer INSIDE A0, never its own geometry),
+  // B raised long grass, C oak canopy. Two kinds of control, and which is which is a
+  // property of what the value feeds rather than a preference:
+  //
+  //   LIVE        colours, blend widths, thresholds, offsets. Bound on `onChange`, so they
+  //               move under the cursor — they are uniform writes and cost nothing.
+  //   STRUCTURAL  coverage, patch scale, hull size. Bound on `onFinishChange`, because each
+  //               re-bakes the cover masks and re-scatters the canopy, and doing that once
+  //               per mouse-move event makes the slider unusable.
+  //
+  // The fields marked STRUCTURAL in `art/islandCover.ts` are exactly the ones wired to
+  // `rebuild` here; that comment and this binding have to agree.
+  const cover = ISLAND_COVER;
+  const tiers = { base: true, longGrass: true, canopy: true, hulls: 0 };
+
+  const syncLive = (): void => test.archipelago.refreshCover(false);
+  const rebuild = (): void => {
+    test.archipelago.refreshCover(true);
+    tiers.hulls = test.archipelago.hulls;
+    hullsCtl.updateDisplay();
   };
-  const vegFolder = debug.gui.addFolder('Vegetation (03 §8)');
-  vegFolder.add(vegParams, 'visible').name('foliage').onChange((v: boolean) => test.vegetation.setVisible(v));
-  vegFolder
-    .add(vegParams, 'canopyMass')
-    .name('canopy mass (far LOD)')
-    .onChange((v: boolean) => test.vegetation.setCanopyVisible(v));
-  vegFolder
-    .add(vegParams, 'density', 0, 1, 0.05)
-    .name('instances shown')
-    .onChange((v: number) => test.vegetation.setDensityVisible(v));
-  vegFolder.add(vegParams, 'wind', 0, 4, 0.1).name('wind speed').onChange((v: number) => test.vegetation.setWind(v));
-  vegFolder
-    .add(vegParams, 'lod')
-    .name('distance LOD')
-    .onChange((v: boolean) => test.vegetation.setLodEnabled(v));
-  vegFolder
-    .add(vegParams, 'nearRange', 50, 1200, 10)
-    .name('near range (m)')
-    .onChange((v: number) => test.vegetation.setNearRange(v));
-  vegFolder
-    .add(vegParams, 'farRange', 100, 3000, 10)
-    .name('far range (m)')
-    .onChange((v: number) => test.vegetation.setFarRange(v));
+
+  // ---- the island generator ---------------------------------------------------------------
+  // The seed is the whole archipelago: every spine, width, cut, doline and beach is a pure
+  // function of it. Changing it reloads rather than rebuilding in place — the field, the
+  // cover masks, the shore atlas, the bathymetry and every mesh bake from it, and rebuilding
+  // that graph live is a much larger job than looking at a different island is worth.
+  const genFolder = debug.gui.addFolder('Island generator');
+  const genParams = {
+    seed: Number(query.get('island') ?? TEST_ISLAND_SEED),
+    reroll: () => {
+      const next = Math.floor(Math.random() * 100000);
+      query.set('island', String(next));
+      window.location.search = query.toString();
+    },
+    apply: () => {
+      query.set('island', String(genParams.seed));
+      window.location.search = query.toString();
+    },
+  };
+  genFolder.add(genParams, 'seed', 0, 100000, 1).name('seed');
+  genFolder.add(genParams, 'apply').name('load this seed');
+  genFolder.add(genParams, 'reroll').name('random island');
+
+  // ---- tier A0: the ground ---------------------------------------------------------------
+  const baseFolder = debug.gui.addFolder('Tier A0 — ground');
+  baseFolder.add(tiers, 'base').name('visible').onChange((v: boolean) => {
+    for (const i of test.archipelago.islands) i.terrainMesh.visible = v;
+  });
+  baseFolder.addColor(cover, 'grass').name('short grass').onChange(syncLive);
+  baseFolder.addColor(cover, 'sand').name('sand').onChange(syncLive);
+  baseFolder.addColor(cover, 'cliff').name('limestone').onChange(syncLive);
+  baseFolder.addColor(cover, 'cliffStrata').name('limestone strata').onChange(syncLive);
+
+  const sandFolder = baseFolder.addFolder('shoreline');
+  sandFolder.add(cover, 'sandWidth', 0, 30, 0.5).name('edge trim (m)').onChange(syncLive);
+  sandFolder.add(cover, 'shoreSandWidth', 0, 40, 0.5).name('bare shore (m)').onChange(syncLive).onFinishChange(rebuild);
+  sandFolder.add(cover, 'sandSeaward', 0, 400, 5).name('reach seaward (m)').onChange(syncLive);
+  sandFolder.add(cover, 'sandSoftness', 0.25, 40, 0.25).name('blend width (m)').onChange(syncLive);
+  sandFolder.add(cover, 'sandEdgeWobble', 0, 30, 0.5).name('edge wander (m)').onChange(syncLive);
+  sandFolder.add(cover, 'sandEdgeScale', 10, 400, 5).name('wander scale (m)').onChange(syncLive);
+
+  // Structural as well as live: the cover masks keep themselves off the cliffs using these,
+  // so moving them moves where long grass and oaks are allowed to stand.
+  const cliffFolder = baseFolder.addFolder('cliff');
+  cliffFolder.add(cover, 'cliffSlopeStart', 0, 1, 0.01).name('slope start').onChange(syncLive).onFinishChange(rebuild);
+  cliffFolder.add(cover, 'cliffSoftness', 0.01, 0.6, 0.01).name('blend width').onChange(syncLive);
+  cliffFolder.add(cover, 'coastRockNear', 0, 60, 1).name('coast rock, full (m)').onChange(syncLive);
+  cliffFolder.add(cover, 'coastRockFar', 5, 200, 1).name('coast rock, gone by (m)').onChange(syncLive);
+  cliffFolder.add(cover, 'strataMetres', 1, 30, 0.5).name('bed thickness (m)').onChange(syncLive);
+  cliffFolder.add(cover, 'strataStrength', 0, 1, 0.01).name('bed contrast').onChange(syncLive);
+
+  // ---- tier A1: dried grass ---------------------------------------------------------------
+  // No visibility toggle, and that is not an omission: A1 is composited inside A0's grass
+  // branch (§3), so "hiding" it means setting its coverage to zero.
+  const dryFolder = debug.gui.addFolder('Tier A1 — dried grass');
+  dryFolder.addColor(cover, 'grassDry').name('colour').onChange(syncLive);
+  dryFolder.add(cover, 'drySoftness', 0.01, 0.5, 0.01).name('blend width').onChange(syncLive);
+  dryFolder.add(cover, 'dryCoverage', 0, 0.6, 0.01).name('coverage (0.04-0.12)').onFinishChange(rebuild);
+  dryFolder.add(cover, 'dryScale', 10, 400, 2).name('patch scale (m)').onFinishChange(rebuild);
+  dryFolder.add(cover, 'dryDetailScale', 5, 150, 1).name('detail scale (m)').onFinishChange(rebuild);
+  dryFolder.add(cover, 'dryDetailAmount', 0, 1, 0.01).name('detail amount').onFinishChange(rebuild);
+
+  // ---- tier B: raised long grass ----------------------------------------------------------
+  const longFolder = debug.gui.addFolder('Tier B — long grass');
+  longFolder.add(tiers, 'longGrass').name('visible')
+    .onChange((v: boolean) => test.archipelago.setTierVisibility(v, tiers.canopy));
+  longFolder.addColor(cover, 'longGrass').name('colour').onChange(syncLive);
+  longFolder.add(cover, 'longGrassOffset', 0, 4, 0.05).name('lift off ground (m)').onChange(syncLive);
+  longFolder.add(cover, 'longGrassThreshold', 0, 1, 0.01).name('alpha cut').onChange(syncLive);
+  longFolder.add(cover, 'longGrassBreakupScale', 3, 80, 1).name('edge breakup (m)').onChange(syncLive);
+  longFolder.add(cover, 'longGrassSandMargin', 0, 60, 0.5).name('clearance off sand (m)').onChange(syncLive);
+  longFolder.add(cover, 'longGrassCoverage', 0, 1, 0.01).name('coverage').onFinishChange(rebuild);
+  longFolder.add(cover, 'longGrassScale', 15, 400, 5).name('patch scale (m)').onFinishChange(rebuild);
+
+  // ---- tier C: oak canopy -----------------------------------------------------------------
+  const canopyFolder = debug.gui.addFolder('Tier C — oak canopy');
+  canopyFolder.add(tiers, 'canopy').name('visible')
+    .onChange((v: boolean) => test.archipelago.setTierVisibility(tiers.longGrass, v));
+  canopyFolder.addColor(cover, 'canopyDark').name('shadow stop').onChange(syncLive);
+  canopyFolder.addColor(cover, 'canopyMid').name('mid stop').onChange(syncLive);
+  canopyFolder.addColor(cover, 'canopyLight').name('lit stop').onChange(syncLive);
+  canopyFolder.add(cover, 'normalSpread', 0, 1, 0.01).name('normal spread (0.35-0.75)').onChange(syncLive);
+  canopyFolder.add(cover, 'splitMid', -1, 1, 0.01).name('mid threshold (0.15)').onChange(syncLive);
+  canopyFolder.add(cover, 'splitLit', -1, 1, 0.01).name('lit threshold (0.45)').onChange(syncLive);
+  canopyFolder.add(cover, 'dabDensity', 0, 0.4, 0.005).name('lit dab coverage (0.08)').onChange(syncLive);
+  canopyFolder.add(cover, 'dabScale', 4, 120, 1).name('dab scale (m)').onChange(syncLive);
+  canopyFolder.add(cover, 'forestThreshold', 0, 1, 0.01).name('treeline threshold').onChange(syncLive).onFinishChange(rebuild);
+  canopyFolder.add(cover, 'forestSandMargin', 0, 120, 1).name('clearance off sand (m)').onChange(syncLive);
+  canopyFolder.add(cover, 'forestCoverage', 0, 1, 0.01).name('coverage').onFinishChange(rebuild);
+  canopyFolder.add(cover, 'forestScale', 60, 1200, 10).name('grove scale (m)').onFinishChange(rebuild);
+  canopyFolder.add(cover, 'canopyCellSize', 16, 200, 2).name('scatter cell (m)').onFinishChange(rebuild);
+  canopyFolder.add(cover, 'hullsPerCell', 1, 6, 1).name('hulls per cell').onFinishChange(rebuild);
+  canopyFolder.add(cover, 'hullRadius', 3, 60, 0.5).name('crown radius (m)').onFinishChange(rebuild);
+  canopyFolder.add(cover, 'hullHeight', 2, 40, 0.5).name('crown height (m)').onFinishChange(rebuild);
+  canopyFolder.add(cover, 'hullJitter', 0, 1, 0.01).name('size variation').onFinishChange(rebuild);
+  canopyFolder.add(cover, 'canopyMaxHulls', 1000, 120000, 1000).name('hull cap').onFinishChange(rebuild);
+  tiers.hulls = test.archipelago.hulls;
+  const hullsCtl = canopyFolder.add(tiers, 'hulls').name('hulls placed').disable();
+
+  // ---- shared suitability ------------------------------------------------------------------
+  // One veto, three tiers (§7.1). It lives in its own folder because moving it moves every
+  // patch outline on the island at once, which is exactly what it is for.
+  const suitFolder = debug.gui.addFolder('Cover suitability');
+  suitFolder.add(cover, 'coverMaxSlope', 0.1, 1, 0.01).name('max slope').onFinishChange(rebuild);
+  suitFolder.add(cover, 'moistureScale', 200, 3000, 25).name('moisture scale (m)').onFinishChange(rebuild);
+  suitFolder.add(cover, 'moistureBias', 0, 1, 0.01).name('moisture bias').onFinishChange(rebuild);
 
   // --- free camera -----------------------------------------------------------------------
   const camHud = document.createElement('div');
   camHud.className = 'freecam-hud';
   camHud.style.display = 'none';
   ui.appendChild(camHud);
+
+  // --- the pilot's seat ------------------------------------------------------------------
+  // Airspeed, the throttle lever against what the engines are actually giving, and how much
+  // hull is still in the water. That last number is the takeoff run: it sits at 1 through
+  // the displacement phase, falls as the hull climbs onto the step, and hits zero at unstick.
+  const pilotHud = document.createElement('div');
+  pilotHud.className = 'freecam-hud';
+  pilotHud.style.display = 'none';
+  ui.appendChild(pilotHud);
+
+  const paintPilotHud = (): void => {
+    const s = test.seaplane.state;
+    const bar = (v: number): string => {
+      const n = Math.round(Math.max(0, Math.min(1, v)) * 12);
+      return '[' + '#'.repeat(n) + '.'.repeat(12 - n) + ']';
+    };
+    const phase = s.airborne
+      ? (s.stalled ? 'STALL' : 'airborne')
+      : s.wetted > 0.75 ? 'displacement'
+      : s.wetted > 0.08 ? 'on the step'
+      : 'unsticking';
+    pilotHud.textContent =
+      'throttle ' + bar(test.seaplane.input.controls.throttle) +
+      '   engines ' + bar(test.seaplane.physics.engine) +
+      '\nairspeed ' + s.airspeed.toFixed(1) + ' m/s   ' + (s.airspeed * 1.944).toFixed(0) + ' kt' +
+      '   altitude ' + s.altitude.toFixed(1) + ' m   climb ' + s.climbRate.toFixed(1) + ' m/s' +
+      '\nhull in water ' + bar(s.wetted) + '  ' + phase +
+      '   AoA ' + ((s.angleOfAttack * 180) / Math.PI).toFixed(1) + '\u00b0' +
+      '\n W/S throttle  \u00b7  arrows pitch and roll  \u00b7  A/D rudder  \u00b7  R re-moor';
+  };
 
   const paintCamHud = (): void => {
     camHud.textContent =
@@ -527,6 +652,8 @@ if (sceneName === 'palette') {
       freeCam.disable();
       camHud.style.display = 'none';
     }
+    // The free camera and the pilot share WASD, so only one of them may be listening.
+    pilotHud.style.display = v === 'cockpit' ? '' : 'none';
     test.setView(v);
   }
 
@@ -573,7 +700,6 @@ if (sceneName === 'palette') {
     // to break the shelf transition from inside the island generator.
     const islandReport = islandProbe.run();
     const shoreReport = shoreProbe.run();
-    const vegReport = vegProbe.run();
     // Step 6's gate runs on its own calibration card, not on the world view — see PostProbe's
     // header. It restores every pass toggle it touches, so it is safe to run alongside the
     // others; it is last only so the world frame is what remains on screen afterwards.
@@ -581,12 +707,11 @@ if (sceneName === 'palette') {
     const text =
       OceanProbe.format(lastReport) + '\n\n' +
       IslandProbe.format(islandReport) + '\n\n' +
-      VegetationProbe.format(vegReport) + '\n\n' +
       ShoreProbe.format(shoreReport) + '\n\n' +
       PostProbe.format(postReport);
     // Exposed so the headless capture harness can read the gates without scraping console.
     (window as unknown as { __gateText?: string }).__gateText = text;
-    if (lastReport.pass && islandReport.pass && shoreReport.pass && vegReport.pass && postReport.pass) {
+    if (lastReport.pass && islandReport.pass && shoreReport.pass && postReport.pass) {
       console.log('%cWORLD GATES PASS', 'background:#14707c;color:#ebedea;padding:2px 6px;border-radius:3px');
       console.log(text);
     } else {
@@ -613,6 +738,11 @@ if (sceneName === 'palette') {
   engine.onFrame((ctx) => {
     freeCam.update(ctx.dt);
     test.update(ctx.dt);
+    if (params.view === 'cockpit') paintPilotHud();
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'KeyR' && params.view === 'cockpit') test.seaplane.reset();
   });
 
   stillSetView = () => {
@@ -623,6 +753,7 @@ if (sceneName === 'palette') {
   // `?view=free` starts in the air. Applied after the gate wiring so the first runGate has
   // a pose to capture rather than enabling the camera mid-measurement.
   if (params.view === 'free') setView('free');
+  if (params.view === 'cockpit') setView('cockpit');
 }
 
 engine.onFrame(() => {

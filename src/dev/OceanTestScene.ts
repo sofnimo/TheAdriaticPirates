@@ -3,13 +3,15 @@ import { SunRig } from '../render/lighting/SunRig';
 import { SkyDome } from '../world/sky/SkyDome';
 import { DepthField } from '../world/depth/DepthField';
 import { Ocean } from '../world/ocean/Ocean';
-import { Island } from '../world/island/Island';
-import { Vegetation } from '../world/vegetation/Vegetation';
+import { Archipelago } from '../world/island/Archipelago';
+import { TEST_ISLAND_SEED } from '../world/island/IslandSpec';
+import type { CoverField } from '../world/island/CoverField';
 import { ShoreAtlas } from '../world/shore/ShoreAtlas';
 import { makeShoreUniforms, updateFoamLOD, type ShoreUniforms } from '../world/shore/shoreUniforms';
 import { SEA_STATES, swellDirection, type SeaStateName } from '../art/seaStates';
 import { globalUniforms } from '../render/shading/ShadingUniforms';
-import { BIOME } from '../world/island/BiomeField';
+import { WaveSurface } from '../world/ocean/waveSurface';
+import { Seaplane } from '../game/flight/Seaplane';
 
 /**
  * WORLD VALIDATION SCENE — ocean, continuous depth ramp, and from Step 3 one hand-authored
@@ -28,7 +30,7 @@ import { BIOME } from '../world/island/BiomeField';
 
 export type OceanViewName =
   | 'cove' | 'shelf' | 'skim' | 'island' | 'profile' | 'canopy' | 'shore'
-  | 'topdown' | 'low' | 'high' | 'free';
+  | 'topdown' | 'low' | 'high' | 'cockpit' | 'free';
 
 interface ViewSpec {
   position: THREE.Vector3;
@@ -82,6 +84,9 @@ const VIEWS: Record<OceanViewName, ViewSpec> = {
   topdown: { position: new THREE.Vector3(600, 300, 640), target: new THREE.Vector3(600, 0, 600) },
   low: { position: new THREE.Vector3(600, 200, 627), target: new THREE.Vector3(600, 0, 600) },
   high: { position: new THREE.Vector3(600, 1500, 1700), target: new THREE.Vector3(600, 0, 1500) },
+  // Never read either: the seaplane's own chase boom owns the camera while this is selected,
+  // the same way `free` hands it to `FreeCamera`.
+  cockpit: { position: new THREE.Vector3(0, 30, 0), target: new THREE.Vector3(0, 0, -1) },
 };
 
 /**
@@ -125,9 +130,86 @@ function mostExposedShore(field: { resolution: number; land: Uint8Array; originX
       const z = field.originZ + iz * field.metresPerSample;
       const d = atlas.distanceAt(x, z);
       if (d < 2 || d > 12) continue;
-      // Seaward flank only, and the most open stretch of it.
-      const score = field.exposure[i]! + z * 0.0004;
+      // Scored on the ATLAS's headland-versus-cove channel, because that is the number the
+      // run-up reach is actually scaled by. The island field's own exposure says which flank
+      // faces the open sea and saturates at 1 across the whole of it, so ranking by it left
+      // thousands of ties for the `z` term to break — and picked whatever lay furthest north,
+      // which on a generated island is as likely to be a tapering terminus as a headland.
+      const scale = atlas.resolution / field.resolution;
+      const ax = Math.min(atlas.resolution - 1, Math.round(ix * scale));
+      const az = Math.min(atlas.resolution - 1, Math.round(iz * scale));
+      const score = atlas.exposure[az * atlas.resolution + ax]! + field.exposure[i]! * 0.25;
       if (score > best) { best = score; bx = x; bz = z; }
+    }
+  }
+  return { x: bx, z: bz };
+}
+
+/**
+ * Which way is out to sea, at a point on the coast.
+ *
+ * Downhill on the elevation field, which is the seaward direction by definition once the
+ * terrain and the bathymetry are one signed surface. The shore view used to step a fixed
+ * +62 m in Z from the waterline and call that "out to sea"; that holds only for a coast facing
+ * north, and on a generated island it puts the camera inside the hill about as often as not —
+ * whereupon the foam gate measures zero foam and reports a shoreline failure that is really a
+ * camera failure.
+ */
+function seawardAt(
+  field: { metresPerSample: number; heightAt(x: number, z: number): number },
+  x: number, z: number,
+): { x: number; z: number } {
+  const e = field.metresPerSample * 3;
+  const gx = field.heightAt(x + e, z) - field.heightAt(x - e, z);
+  const gz = field.heightAt(x, z + e) - field.heightAt(x, z - e);
+  const len = Math.hypot(gx, gz) || 1;
+  return { x: -gx / len, z: -gz / len };
+}
+
+/**
+ * Metres offshore, along `dir`, at which the seabed reaches `depth`.
+ *
+ * The two water views frame the shelf transition, and where that transition IS depends
+ * entirely on the island: a windward flank e-folds to the abyss in 200 m and a sheltered one
+ * takes 450. Framing it with a fixed offset in metres — which is what these views used to do —
+ * shows the whole colour ramp on one island and nothing but deep blue on the next.
+ */
+function offshoreAtDepth(
+  field: { heightAt(x: number, z: number): number },
+  x: number, z: number, dir: { x: number; z: number }, depth: number,
+): number {
+  for (let d = 0; d <= 1200; d += 8) {
+    if (-field.heightAt(x + dir.x * d, z + dir.z * d) >= depth) return d;
+  }
+  return 1200;
+}
+
+/**
+ * The stretch of coast with the widest shelf — where the depth ramp has the most room to read.
+ *
+ * 02's "most important colour event" is the shallow-to-deep transition, and it is only worth
+ * measuring where it is actually resolvable. The widest deposited beach marks the gentlest
+ * seabed, because both come from the same sheltered, low-energy flank.
+ */
+function gentlestShore(
+  field: {
+    resolution: number; land: Uint8Array; originX: number; originZ: number;
+    metresPerSample: number; beachWidth: Float32Array;
+  },
+  atlas: ShoreAtlas,
+): { x: number; z: number } {
+  let best = -Infinity;
+  let bx = 0;
+  let bz = 0;
+  for (let iz = 0; iz < field.resolution; iz += 2) {
+    for (let ix = 0; ix < field.resolution; ix += 2) {
+      const i = iz * field.resolution + ix;
+      if (field.land[i] === 1) continue;
+      const x = field.originX + ix * field.metresPerSample;
+      const z = field.originZ + iz * field.metresPerSample;
+      const d = atlas.distanceAt(x, z);
+      if (d < 2 || d > 10) continue;
+      if (field.beachWidth[i]! > best) { best = field.beachWidth[i]!; bx = x; bz = z; }
     }
   }
   return { x: bx, z: bz };
@@ -140,13 +222,8 @@ function mostExposedShore(field: { resolution: number; land: Uint8Array; originX
  * of scrub is not a canopy, and framing on one would put the gate's transects across mostly
  * open ground.
  */
-function densestWoodland(biomes: {
-  resolution: number;
-  biome: Uint8Array;
-  density: Float32Array;
-  island: { originX: number; originZ: number; metresPerSample: number; heightAt(x: number, z: number): number };
-}): { x: number; y: number; z: number } {
-  const n = biomes.resolution;
+function densestWoodland(cover: CoverField): { x: number; y: number; z: number } {
+  const n = cover.resolution;
   const R = 5;
   let best = -Infinity;
   let bx = 0;
@@ -156,21 +233,71 @@ function densestWoodland(biomes: {
       let score = 0;
       for (let dz = -R; dz <= R; dz += R) {
         for (let dx = -R; dx <= R; dx += R) {
-          const j = (iz + dz) * n + (ix + dx);
-          const b = biomes.biome[j]!;
-          if (b === BIOME.denseForest) score += biomes.density[j]! * 2;
-          else if (b === BIOME.sparseForest) score += biomes.density[j]!;
+          score += cover.forest[(iz + dz) * n + (ix + dx)]!;
         }
       }
       if (score > best) {
         best = score;
-        bx = biomes.island.originX + ix * biomes.island.metresPerSample;
-        bz = biomes.island.originZ + iz * biomes.island.metresPerSample;
+        // The cover field has its own coarser pitch; indexing it with the elevation field's
+        // would aim the camera at twice the distance from the origin it meant to.
+        bx = cover.worldX(ix);
+        bz = cover.worldZ(iz);
       }
     }
   }
-  return { x: bx, y: biomes.island.heightAt(bx, bz), z: bz };
+  return { x: bx, y: cover.island.heightAt(bx, bz), z: bz };
 }
+
+/**
+ * A SHELTERED STRETCH OF WATER TO START ON.
+ *
+ * A seaplane does not take off from the open sea, and this is not a nicety: the hull has to
+ * fight through its own bow wave before it planes, and a metre of swell on the nose during
+ * that run stops the takeoff outright. So the mooring is found the way a pilot would find
+ * one — water deep enough to float in, shallow enough to be inside the shelf, on the
+ * SHELTERED flank, and with a long clear run ahead of it down the lane.
+ *
+ * Searched rather than authored, because the island is generated: a hardcoded pair of
+ * coordinates is a mooring on the hillside as soon as the seed changes.
+ */
+function findMooring(
+  field: {
+    resolution: number; land: Uint8Array; height: Float32Array; exposure: Float32Array;
+    originX: number; originZ: number; metresPerSample: number;
+  },
+  atlas: ShoreAtlas,
+): { x: number; z: number } {
+  let best = -Infinity;
+  let bx = 0;
+  let bz = 0;
+  for (let iz = 0; iz < field.resolution; iz += 2) {
+    for (let ix = 0; ix < field.resolution; ix += 2) {
+      const i = iz * field.resolution + ix;
+      if (field.land[i] === 1) continue;
+      const depth = -field.height[i]!;
+      if (depth < 4 || depth > 26) continue;
+      const x = field.originX + ix * field.metresPerSample;
+      const z = field.originZ + iz * field.metresPerSample;
+      const d = atlas.distanceAt(x, z);
+      // Off the beach, but still in the lee of the island rather than out in the channel.
+      if (d < 90 || d > 400) continue;
+      // Sheltered flank, and the deeper end of the anchorage — the run wants water under it.
+      const score = -field.exposure[i]! * 2 + depth * 0.04;
+      if (score > best) { best = score; bx = x; bz = z; }
+    }
+  }
+  return { x: bx, z: bz };
+}
+
+/**
+ * The map tile: 8 km square, sampled every 5.33 m.
+ *
+ * Four times the area of the single-island tile it replaces, at the same order of sampling.
+ * The island field, the bathymetry and the shore atlas all share this grid — see the note in
+ * `Archipelago` on why one lattice rather than three.
+ */
+const WORLD_SIZE = 8192;
+const FIELD_RESOLUTION = 1536;
 
 export class OceanTestScene {
   readonly scene = new THREE.Scene();
@@ -179,10 +306,12 @@ export class OceanTestScene {
   readonly sky: SkyDome;
   readonly depthField: DepthField;
   readonly ocean: Ocean;
-  readonly island: Island;
-  readonly vegetation: Vegetation;
+  readonly archipelago: Archipelago;
   readonly shoreAtlas: ShoreAtlas;
   readonly shoreUniforms: ShoreUniforms;
+  /** The sea surface the hull floats on. The same four waves the ocean shader draws. */
+  readonly waveSurface: WaveSurface;
+  readonly seaplane: Seaplane;
   readonly devOverlay = new THREE.Scene();
 
   private view: OceanViewName = 'cove';
@@ -194,34 +323,42 @@ export class OceanTestScene {
     this.sky = new SkyDome(this.scene, 10000);
     this.sun = new SunRig(this.scene, { shadowExtent: 60, shadowMapSize: 1024, distance: 400 });
 
-    // Order matters: the island bakes its field first, then the bathymetry is built FROM
-    // that mask. One shoreline, two consumers (02b §1.2).
-    this.island = new Island(this.scene, undefined, 4096);
+    // Order matters: the archipelago bakes its field first, then the bathymetry is built
+    // FROM that mask. One shoreline, two consumers (02b §1.2).
+    const islandSeed = Number(new URLSearchParams(window.location.search).get('island') ?? TEST_ISLAND_SEED);
+    this.archipelago = new Archipelago(this.scene, {
+      seed: Number.isFinite(islandSeed) ? islandSeed : TEST_ISLAND_SEED,
+      heroSeed: Number.isFinite(islandSeed) ? islandSeed : TEST_ISLAND_SEED,
+      worldSize: WORLD_SIZE,
+      resolution: FIELD_RESOLUTION,
+      // `ridge` is 03 §16's reference archetype — the Dugi Otok case: one long anticline
+      // crest with an elbow, a cliffed windward flank, a terraced sheltered one. The beach is
+      // not forced anywhere; it falls out of the drift cell in the concavity of the bend,
+      // which is the whole point of §10.
+      heroArchetype: 'ridge',
+      heroName: 'Punta Severa',
+    });
     this.depthField = new DepthField({
-      resolution: 1024,
-      worldSize: 4096,
-      landAt: this.island.landAt,
+      resolution: FIELD_RESOLUTION,
+      worldSize: WORLD_SIZE,
+      origin: new THREE.Vector2(-WORLD_SIZE / 2, -WORLD_SIZE / 2),
+      landAt: this.archipelago.landAt,
+      // The bathymetry IS the archipelago's topography now — one surface, land and seabed
+      // together. Passing the height as well as the mask is what makes that true rather
+      // than approximately true.
+      heightAt: this.archipelago.heightAt,
     });
     // 02b §7.1: the shoreline is a post-process stage of the island pipeline. It bakes from
-    // the island's mask and the bathymetry's depth, so both must already exist.
-    this.shoreAtlas = new ShoreAtlas(this.island.field, this.depthField);
+    // the land mask and the bathymetry's depth, so both must already exist.
+    this.shoreAtlas = new ShoreAtlas(this.archipelago.field, this.depthField);
     this.shoreUniforms = makeShoreUniforms(this.shoreAtlas);
-    this.island.attachShore(this.shoreUniforms);
+    this.archipelago.attachShore(this.shoreUniforms);
 
     this.ocean = new Ocean(this.scene, this.depthField, seaState, this.shoreUniforms);
 
-    // 03 §8. Placed from the island's own baked biome field, cropped to the meshed bounds —
-    // planting outside them would put trees on ground the terrain mesh does not cover.
-    this.vegetation = new Vegetation(
-      this.scene,
-      this.island.field,
-      this.island.biomes,
-      this.island.meshInfo.bounds,
-    );
-
-    // Frame the aerial views from the island's actual bounds rather than hardcoded numbers,
-    // so re-authoring the spine cannot silently leave the camera pointing at empty sea.
-    const b = this.island.meshInfo.bounds;
+    // Frame the aerial views from the hero island's actual bounds rather than hardcoded
+    // numbers, so re-authoring the spine cannot silently leave the camera pointing at sea.
+    const b = this.archipelago.hero.meshInfo.bounds;
     const cx = (b.minX + b.maxX) / 2;
     const cz = (b.minZ + b.maxZ) / 2;
     const span = Math.max(b.maxX - b.minX, b.maxZ - b.minZ);
@@ -230,9 +367,9 @@ export class OceanTestScene {
     // the haze; this trades a little of the tail for a camera the game will actually use.
     VIEWS.island = {
       position: new THREE.Vector3(cx + span * 0.35, span * 0.25, cz + span * 0.45),
-      target: new THREE.Vector3(cx, this.island.spec.peakHeight * 0.3, cz),
+      target: new THREE.Vector3(cx, this.archipelago.hero.spec.crestHeight * 0.3, cz),
     };
-    const summit = this.island.field.summit;
+    const summit = this.archipelago.field.summit;
     VIEWS.profile = {
       position: new THREE.Vector3(summit.x + 260, summit.height * 0.85, summit.z + 620),
       target: new THREE.Vector3(summit.x - 60, summit.height * 0.45, summit.z - 260),
@@ -242,7 +379,7 @@ export class OceanTestScene {
     // Point the canopy view at the island's own densest woodland rather than at a hardcoded
     // spot. Re-authoring the spine moves every forest patch, and a fixed camera would end up
     // measuring the Ghibli band on a bare hillside and reporting one tone.
-    const wood = densestWoodland(this.island.biomes);
+    const wood = densestWoodland(this.archipelago.cover);
     VIEWS.canopy = {
       position: new THREE.Vector3(wood.x + 120, wood.y + 58, wood.z + 175),
       target: new THREE.Vector3(wood.x, wood.y + 6, wood.z),
@@ -250,27 +387,53 @@ export class OceanTestScene {
 
     // Put the camera on the most exposed stretch of the seaward coast, so the run-up band is
     // at its widest and the foam is being judged where it does the most work.
-    const shorePoint = mostExposedShore(this.island.field, this.shoreAtlas);
+    const shorePoint = mostExposedShore(this.archipelago.field, this.shoreAtlas);
     // 02b §2.4 splits foam behaviour into three altitude regimes and says individual clumps
     // are only legible as shapes in the "<150 m" one. At 70 m up and 200 m out the run-up band
     // was 3-5 px tall — present and correct, and impossible to judge. This sits in the regime
     // the doc says to judge it in.
+    // 62 m out to sea, looking back across the waterline — along the coast's own seaward
+    // normal rather than along +Z, so this holds whichever way the chosen stretch faces.
+    const seaward = seawardAt(this.archipelago.field, shorePoint.x, shorePoint.z);
     VIEWS.shore = {
-      position: new THREE.Vector3(shorePoint.x + 6, 22, shorePoint.z + 62),
-      target: new THREE.Vector3(shorePoint.x, 1, shorePoint.z - 14),
+      position: new THREE.Vector3(
+        shorePoint.x + seaward.x * 62, 22, shorePoint.z + seaward.z * 62,
+      ),
+      target: new THREE.Vector3(
+        shorePoint.x - seaward.x * 14, 1, shorePoint.z - seaward.z * 14,
+      ),
     };
 
-    // Re-aim the two water views at the island's seaward flank. They were pointed at the
-    // Step 2 placeholder coastline, which no longer exists.
-    const shoreZ = b.maxZ - 140;
-    VIEWS.cove = {
-      position: new THREE.Vector3(cx + 60, 200, shoreZ + 520),
-      target: new THREE.Vector3(cx + 60, 0, shoreZ + 60),
-    };
-    VIEWS.shelf = {
-      position: new THREE.Vector3(cx - 220, 340, shoreZ + 330),
-      target: new THREE.Vector3(cx - 220, 0, shoreZ + 190),
-    };
+    // Re-aim the two water views on the shelf the island actually generated, rather than on a
+    // fixed offset from its bounding box. Both frame the same transition — `cove` obliquely,
+    // the way the reference frame composes it, and `shelf` near-vertically, which is the one
+    // the smoothness probe measures on, because an oblique view foreshortens the band edge.
+    const ramp = gentlestShore(this.archipelago.field, this.shoreAtlas);
+    const rampOut = seawardAt(this.archipelago.field, ramp.x, ramp.z);
+    // The near marker sits just past the surf, the far one where the ramp has run out. Between
+    // them is the whole shallow-to-deep event; outside them is beach on one side and flat
+    // deep water on the other, and neither says anything about the ramp.
+    const near = Math.max(40, offshoreAtDepth(this.archipelago.field, ramp.x, ramp.z, rampOut, 3));
+    const far = Math.max(near + 120, offshoreAtDepth(this.archipelago.field, ramp.x, ramp.z, rampOut, 26));
+    const at = (d: number, y: number): THREE.Vector3 =>
+      new THREE.Vector3(ramp.x + rampOut.x * d, y, ramp.z + rampOut.z * d);
+    VIEWS.cove = { position: at(far * 1.9, 200), target: at(near * 0.5, 0) };
+    VIEWS.shelf = { position: at(far * 1.25, 340), target: at((near + far) * 0.5, 0) };
+
+    // --- the aircraft --------------------------------------------------------------------
+    // The hull floats on the SAME four waves the ocean shader draws — one wave stack, two
+    // readers, for the same reason the land mask and the bathymetry share one array.
+    this.waveSurface = new WaveSurface(seaState);
+    const mooring = findMooring(this.archipelago.field, this.shoreAtlas);
+    // Nose down the lane, along strike: that is where the open water is, and a seaplane
+    // needs a kilometre of it.
+    const [strikeX, strikeZ] = this.archipelago.specs[0]!.strike;
+    this.seaplane = new Seaplane(this.scene, this.waveSurface, {
+      startX: mooring.x,
+      startZ: mooring.z,
+      heading: Math.atan2(strikeX, strikeZ),
+    });
+
     this.setView('cove');
   }
 
@@ -280,9 +443,19 @@ export class OceanTestScene {
 
   setView(view: OceanViewName): void {
     this.view = view;
-    // The free camera owns the pose. Refresh the camera-dependent systems — the ocean rings
-    // and the sky dome both follow the camera — but do not move it.
+    // Only the pilot's seat takes the controls, and only while it is the active view. The
+    // keys are the free camera's as well, so leaving the cockpit has to hand them back.
+    this.seaplane.input.enabled = view === 'cockpit';
+    if (view !== 'cockpit') this.seaplane.input.release();
+
+    // The free camera and the chase boom each own the pose. Refresh the camera-dependent
+    // systems — the ocean rings and the sky dome both follow the camera — but do not move it.
     if (view === 'free') {
+      this.update(0);
+      return;
+    }
+    if (view === 'cockpit') {
+      this.seaplane.driveCamera(this.camera, 0);
       this.update(0);
       return;
     }
@@ -301,14 +474,18 @@ export class OceanTestScene {
   /** `dt` of 0 just refreshes positions without advancing the wave clock. */
   update(dt: number): void {
     this.time += dt;
+    // The hull's wave clock and the shader's are the same number by assignment, not by two
+    // systems being fed the same delta — which is what stops the aircraft drifting a few
+    // centimetres out of the water it is visibly sitting in.
+    this.waveSurface.time = this.time;
+    if (dt > 0) this.seaplane.update(dt);
+    if (this.view === 'cockpit') this.seaplane.driveCamera(this.camera, Math.max(dt, 1e-4));
+
     this.camera.updateMatrixWorld(true);
-    // The shared clock. Nothing advanced it before the wind arrived — the ocean carries its
-    // own wave time — so it is set here, where the world clock already lives, rather than
-    // giving the vegetation a second one to drift against.
+    // The shared clock, set here where the world clock already lives.
     globalUniforms.uTime.value = this.time;
     this.sky.update(this.camera);
     this.ocean.update(this.camera, this.time);
-    this.vegetation.update(this.camera);
     updateFoamLOD(this.shoreUniforms, this.camera.position.y);
   }
 

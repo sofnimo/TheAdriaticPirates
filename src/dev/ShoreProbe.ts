@@ -108,7 +108,7 @@ export class ShoreProbe {
     globalUniforms.uHazeStrength.value = 0;
 
     const atlas = this.test.shoreAtlas;
-    const field = this.test.island.field;
+    const field = this.test.archipelago.field;
     const depthField = this.test.depthField;
 
     // --- atlas, on the arrays -------------------------------------------------------

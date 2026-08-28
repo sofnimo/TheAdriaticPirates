@@ -48,6 +48,15 @@ export class ShoreAtlas {
 
   /** Signed distance in metres, kept for the gate; negative under land. */
   readonly signedDistance: Float32Array;
+  /**
+   * Channel A, kept rather than discarded after upload: 0 sheltered cove, 1 exposed headland.
+   *
+   * This is the number the run-up reach is scaled by, so anything choosing "the most exposed
+   * stretch of coast" has to score on it. The island field's own exposure answers a different
+   * question — which FLANK faces the open sea — and saturates across most of that flank, so
+   * ranking by it picks an arbitrary texel among thousands of ties.
+   */
+  readonly exposure: Float32Array;
 
   constructor(field: IslandField, depthField: DepthField, options: ShoreAtlasOptions = {}) {
     this.maxShoreDistance = options.maxShoreDistance ?? 60;
@@ -115,8 +124,8 @@ export class ShoreAtlas {
       }
     }
 
-    const exposure = computeExposure(field, n, metresPerTexel, exposureRadius);
-    for (let i = 0; i < n * n; i++) data[i * 4 + 3] = clamp255(exposure[i]! * 255);
+    this.exposure = computeExposure(field, n, metresPerTexel, exposureRadius);
+    for (let i = 0; i < n * n; i++) data[i * 4 + 3] = clamp255(this.exposure[i]! * 255);
 
     this.texture = new THREE.DataTexture(data, n, n, THREE.RGBAFormat);
     this.texture.minFilter = THREE.LinearFilter;

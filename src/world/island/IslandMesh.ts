@@ -2,91 +2,126 @@ import * as THREE from 'three';
 import type { IslandField } from './IslandField';
 
 /**
- * Heightmap-displaced grid, built once on the CPU — `03 — Procedural Islands.md` §1.2.
+ * THE TERRAIN MESH — §1.2's heightmap-displaced regular grid.
  *
- * A regular grid rather than anything cleverer: the doc is explicit that 95% of the terrain
- * is representable as one height per XZ, and that marching-cubes escalation is reserved for
- * one or two hero overhangs (§3.4). This island has none, so it does not pay for them.
+ * THE MESH GRID IS THE FIELD GRID, SUBSAMPLED BY A WHOLE NUMBER. An independent grid stretched
+ * to fit a bounding box re-samples the field at a non-integer ratio, and the interpolation
+ * weight then cycles with a fixed period across the island — a REGULAR aliasing pattern, which
+ * the eye reads as banding running the length of the ridge. Snapping to an integer stride
+ * means every vertex sits exactly on a sample: the height is read, not reconstructed, and the
+ * normals are central differences over the mesh's own neighbours, so the shaded surface is the
+ * drawn surface.
  *
- * The grid is cropped to the island's bounding box rather than covering the whole 4 km field.
- * Meshing empty sea would spend the entire triangle budget on triangles at y=0 that the ocean
- * already draws over.
+ * WHY THE TRIM IS A DEPTH CONTOUR AND NOTHING ELSE. The old builder dropped any quad whose
+ * four corners were all below a cut-off depth, on a seabed that carried the same noise as the
+ * land. A noisy field crossing a threshold produces a ragged boundary, and a ragged boundary
+ * on a mesh edge is a row of triangular spikes — the underwater "teeth" behind every island.
+ * Two things fix it together and neither is sufficient alone:
+ *
+ *   1. `topography.ts` fades all seabed roughness out by 25 m of depth, so the contour this
+ *      trim runs along is a smooth curve rather than a noisy one;
+ *   2. the trim sits at 45 m, far below the roughness AND far below anything a wave trough can
+ *      expose, so the boundary is under opaque water even at the deepest trough.
  */
 
 export interface IslandMeshResult {
   geometry: THREE.BufferGeometry;
   triangles: number;
-  /** World-space bounds actually meshed, for the probe and for camera framing. */
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
 }
 
-/** Metres below sea level past which submerged terrain is no longer meshed. */
-const DEEP_CULL = 7;
+/** Metres below sea level past which submerged terrain is not meshed. See the header. */
+const TRIM_DEPTH = 45;
+/** Metres of sea kept around the land box before the trim gets a say. */
+const SHORE_PAD = 700;
 
-export function buildIslandMesh(field: IslandField, segments = 384): IslandMeshResult {
-  const bounds = landBounds(field, 120);
+export interface IslandMeshOptions {
+  readonly bounds?: IslandMeshResult['bounds'];
+  /** Metres per grid segment — the knob the triangle budget is spent with. */
+  readonly metresPerSegment?: number;
+  /** Hard cap on segments across either axis, whatever the density asks for. */
+  readonly maxSegments?: number;
+}
 
-  const spanX = bounds.maxX - bounds.minX;
-  const spanZ = bounds.maxZ - bounds.minZ;
-  const nx = segments;
-  const nz = Math.max(8, Math.round((segments * spanZ) / Math.max(spanX, 1)));
+export function buildIslandMesh(field: IslandField, options: IslandMeshOptions = {}): IslandMeshResult {
+  const res = field.resolution;
+  const mps = field.metresPerSample;
+  const request = padBounds(options.bounds ?? landBounds(field), SHORE_PAD);
+
+  const toIndex = (world: number, origin: number): number =>
+    Math.max(0, Math.min(res - 1, Math.round((world - origin) / mps)));
+  const ix0 = toIndex(request.minX, field.originX);
+  const ix1 = toIndex(request.maxX, field.originX);
+  const iz0 = toIndex(request.minZ, field.originZ);
+  const iz1 = toIndex(request.maxZ, field.originZ);
+
+  const cap = options.maxSegments ?? 384;
+  let stride = Math.max(1, Math.round((options.metresPerSegment ?? 9) / mps));
+  let nx = 0;
+  let nz = 0;
+  for (;;) {
+    nx = Math.floor((ix1 - ix0) / stride);
+    nz = Math.floor((iz1 - iz0) / stride);
+    if (Math.max(nx, nz) <= cap || stride > res) break;
+    stride++;
+  }
+  nx = Math.max(2, nx);
+  nz = Math.max(2, nz);
+
+  const step = stride * mps;
+  const sampleX = (i: number): number => Math.min(res - 1, ix0 + i * stride);
+  const sampleZ = (j: number): number => Math.min(res - 1, iz0 + j * stride);
 
   const vertexCount = (nx + 1) * (nz + 1);
   const positions = new Float32Array(vertexCount * 3);
   const normals = new Float32Array(vertexCount * 3);
-  // Per-vertex exposure, so the fragment shader can pick cliff versus terrace without
-  // re-deriving the spine geometry it has no access to.
   const exposures = new Float32Array(vertexCount);
+  const heights = new Float32Array(vertexCount);
 
   for (let j = 0; j <= nz; j++) {
-    const z = bounds.minZ + (spanZ * j) / nz;
+    const sz = sampleZ(j);
+    const z = field.originZ + sz * mps;
     for (let i = 0; i <= nx; i++) {
-      const x = bounds.minX + (spanX * i) / nx;
+      const sx = sampleX(i);
       const v = j * (nx + 1) + i;
-      positions[v * 3 + 0] = x;
-      positions[v * 3 + 1] = field.heightAt(x, z);
+      const s = sz * res + sx;
+      heights[v] = field.height[s]!;
+      positions[v * 3 + 0] = field.originX + sx * mps;
+      positions[v * 3 + 1] = heights[v]!;
       positions[v * 3 + 2] = z;
-      exposures[v] = field.exposure[clampIndex(field, x, z)]!;
+      exposures[v] = field.exposure[s]!;
     }
   }
 
-  // Analytic-ish normals from the baked field rather than from the coarser mesh: the mesh is
-  // sampled below the field's own resolution, and taking normals from the mesh would round
-  // off exactly the cliff faces §3.3 exists to sharpen.
-  const eps = field.metresPerSample;
+  const at = (i: number, j: number): number => heights[j * (nx + 1) + i]!;
+  const normal = new THREE.Vector3();
   for (let j = 0; j <= nz; j++) {
-    const z = bounds.minZ + (spanZ * j) / nz;
     for (let i = 0; i <= nx; i++) {
-      const x = bounds.minX + (spanX * i) / nx;
+      const iL = Math.max(0, i - 1);
+      const iR = Math.min(nx, i + 1);
+      const jD = Math.max(0, j - 1);
+      const jU = Math.min(nz, j + 1);
+      const dhdx = (at(iR, j) - at(iL, j)) / ((iR - iL) * step);
+      const dhdz = (at(i, jU) - at(i, jD)) / ((jU - jD) * step);
+      normal.set(-dhdx, 1, -dhdz).normalize();
       const v = j * (nx + 1) + i;
-      const hL = field.heightAt(x - eps, z);
-      const hR = field.heightAt(x + eps, z);
-      const hD = field.heightAt(x, z - eps);
-      const hU = field.heightAt(x, z + eps);
-      const n = new THREE.Vector3(hL - hR, 2 * eps, hD - hU).normalize();
-      normals[v * 3 + 0] = n.x;
-      normals[v * 3 + 1] = n.y;
-      normals[v * 3 + 2] = n.z;
+      normals[v * 3 + 0] = normal.x;
+      normals[v * 3 + 1] = normal.y;
+      normals[v * 3 + 2] = normal.z;
     }
   }
 
-  // Index only the quads with at least one corner above water. A quad entirely at sea level
-  // is invisible under the ocean surface and is pure cost.
   const indices: number[] = [];
-  const heightOf = (i: number, j: number): number => positions[(j * (nx + 1) + i) * 3 + 1]!;
   for (let j = 0; j < nz; j++) {
     for (let i = 0; i < nx; i++) {
+      const deep =
+        at(i, j) <= -TRIM_DEPTH && at(i + 1, j) <= -TRIM_DEPTH &&
+        at(i, j + 1) <= -TRIM_DEPTH && at(i + 1, j + 1) <= -TRIM_DEPTH;
+      if (deep) continue;
       const a = j * (nx + 1) + i;
       const b = a + 1;
       const c = a + (nx + 1);
       const d = c + 1;
-      // Keep a submerged apron rather than culling at the waterline: the terrain now passes
-      // UNDER the sea surface, and cutting it off at zero would put the mesh's edge exactly
-      // where the intersection is, leaving a crack along the whole coast.
-      const deep =
-        heightOf(i, j) <= -DEEP_CULL && heightOf(i + 1, j) <= -DEEP_CULL &&
-        heightOf(i, j + 1) <= -DEEP_CULL && heightOf(i + 1, j + 1) <= -DEEP_CULL;
-      if (deep) continue;
       indices.push(a, c, b, b, c, d);
     }
   }
@@ -98,21 +133,24 @@ export function buildIslandMesh(field: IslandField, segments = 384): IslandMeshR
   geometry.setIndex(indices);
   geometry.computeBoundingSphere();
 
-  return { geometry, triangles: indices.length / 3, bounds };
+  return {
+    geometry,
+    triangles: indices.length / 3,
+    bounds: {
+      minX: field.originX + sampleX(0) * mps,
+      maxX: field.originX + sampleX(nx) * mps,
+      minZ: field.originZ + sampleZ(0) * mps,
+      maxZ: field.originZ + sampleZ(nz) * mps,
+    },
+  };
 }
 
-function clampIndex(field: IslandField, x: number, z: number): number {
-  const ix = Math.max(0, Math.min(field.resolution - 1, Math.round((x - field.originX) / field.metresPerSample)));
-  const iz = Math.max(0, Math.min(field.resolution - 1, Math.round((z - field.originZ) / field.metresPerSample)));
-  return iz * field.resolution + ix;
+function padBounds(b: IslandMeshResult['bounds'], pad: number): IslandMeshResult['bounds'] {
+  return { minX: b.minX - pad, maxX: b.maxX + pad, minZ: b.minZ - pad, maxZ: b.maxZ + pad };
 }
 
-/** Bounding box of the land mask, expanded by `pad` metres so the shore is never clipped. */
-function landBounds(field: IslandField, pad: number): IslandMeshResult['bounds'] {
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minZ = Infinity;
-  let maxZ = -Infinity;
+function landBounds(field: IslandField): IslandMeshResult['bounds'] {
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
   for (let iz = 0; iz < field.resolution; iz++) {
     for (let ix = 0; ix < field.resolution; ix++) {
       if (field.land[iz * field.resolution + ix] !== 1) continue;
@@ -124,6 +162,7 @@ function landBounds(field: IslandField, pad: number): IslandMeshResult['bounds']
       if (z > maxZ) maxZ = z;
     }
   }
-  if (!Number.isFinite(minX)) return { minX: -100, maxX: 100, minZ: -100, maxZ: 100 };
-  return { minX: minX - pad, maxX: maxX + pad, minZ: minZ - pad, maxZ: maxZ + pad };
+  return Number.isFinite(minX)
+    ? { minX, maxX, minZ, maxZ }
+    : { minX: field.originX, maxX: field.originX + field.worldSize, minZ: field.originZ, maxZ: field.originZ + field.worldSize };
 }

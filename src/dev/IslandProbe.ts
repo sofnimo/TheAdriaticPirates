@@ -77,8 +77,10 @@ export class IslandProbe {
   ) {}
 
   run(): IslandReport {
-    const field = this.test.island.field;
+    const field = this.test.archipelago.field;
 
+    // The hero's texels only. Anisotropy and flank asymmetry are claims about a LANDFORM;
+    // run over the whole tile they would describe the lane layout instead.
     const { anisotropy, spanLongM, spanShortM } = measureAnisotropy(field);
     const flank = measureFlanks(field);
     const shoreMismatches = compareShore(field, this.test.depthField);
@@ -86,7 +88,7 @@ export class IslandProbe {
     const tone = this.probeTones();
     const palette = this.probePalette();
 
-    const triangles = this.test.island.triangles;
+    const triangles = this.test.archipelago.triangles;
     // Engine sets renderer.info.autoReset = false so it can split world and dev-overlay
     // counters per frame, which means info.render.calls ACCUMULATES across every render the
     // probe has just done. Reading it directly reported 59 draw calls for a scene that draws
@@ -259,7 +261,8 @@ function measureAnisotropy(field: IslandField): { anisotropy: number; spanLongM:
   let mz = 0;
   for (let iz = 0; iz < field.resolution; iz++) {
     for (let ix = 0; ix < field.resolution; ix++) {
-      if (field.land[iz * field.resolution + ix] !== 1) continue;
+      const i = iz * field.resolution + ix;
+      if (field.land[i] !== 1 || field.owner[i] !== 0) continue;
       mx += ix; mz += iz; n++;
     }
   }
@@ -269,7 +272,8 @@ function measureAnisotropy(field: IslandField): { anisotropy: number; spanLongM:
   let sxx = 0; let szz = 0; let sxz = 0;
   for (let iz = 0; iz < field.resolution; iz++) {
     for (let ix = 0; ix < field.resolution; ix++) {
-      if (field.land[iz * field.resolution + ix] !== 1) continue;
+      const i = iz * field.resolution + ix;
+      if (field.land[i] !== 1 || field.owner[i] !== 0) continue;
       const dx = ix - mx; const dz = iz - mz;
       sxx += dx * dx; szz += dz * dz; sxz += dx * dz;
     }
@@ -309,7 +313,7 @@ function measureFlanks(field: IslandField): { exposed: number; sheltered: number
   for (let iz = 1; iz < n - 1; iz++) {
     for (let ix = 1; ix < n - 1; ix++) {
       const i = iz * n + ix;
-      if (field.land[i] !== 1) continue;
+      if (field.land[i] !== 1 || field.owner[i] !== 0) continue;
       const h = field.height[i]!;
       if (h < 2 || h > 50) continue;
       const dhx = (field.height[i + 1]! - field.height[i - 1]!) / (2 * step);

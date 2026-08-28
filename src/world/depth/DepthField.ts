@@ -35,6 +35,18 @@ export interface DepthFieldOptions {
    * enforced rather than hoped for. Omitted, it falls back to the Step 2 placeholder coast.
    */
   landAt?: (worldX: number, worldZ: number) => boolean;
+  /**
+   * Signed seabed elevation in metres — the island field's own topography, negative below
+   * the waterline.
+   *
+   * When this is supplied the bathymetry IS the terrain: depth comes from how deep the
+   * ground actually is, not from how far the texel sits from the nearest land. Those are
+   * very different pictures. A cove and an open coast the same distance from land shade
+   * identically under a distance transform, when the whole visual point of a cove is that it
+   * is shallow; and an offshore bank in deep water cannot exist at all, because distance
+   * from land is all the field knows. Reading the ground gets both for nothing.
+   */
+  heightAt?: (worldX: number, worldZ: number) => number;
 }
 
 /**
@@ -59,6 +71,24 @@ const SHELF_PROFILE: ReadonlyArray<readonly [number, number]> = [
   [1600, 1.0],
 ];
 
+/**
+ * Depth-vs-METRES-BELOW-THE-WATERLINE, for the height-driven path.
+ *
+ * This replaces the distance profile's job, and the numbers are chosen to land the turquoise
+ * where the distance profile used to put it: the shelf in the reference frame reaches full
+ * saturation within the first tens of metres of depth, not the first hundreds, so the curve
+ * is front-loaded. Past about 70 m the water is simply the deepest tone and more depth buys
+ * nothing.
+ */
+const DEPTH_PROFILE: ReadonlyArray<readonly [number, number]> = [
+  [0, 0.0],
+  [5, 0.25],
+  [22, 0.5],
+  [55, 0.75],
+  [110, 0.95],
+  [180, 1.0],
+];
+
 export class DepthField {
   readonly texture: THREE.DataTexture;
   readonly origin: THREE.Vector2;
@@ -66,6 +96,7 @@ export class DepthField {
   readonly resolution: number;
   private readonly depth: Float32Array;
   private readonly landAt: ((x: number, z: number) => boolean) | undefined;
+  private readonly heightAt: ((x: number, z: number) => number) | undefined;
   /**
    * The land mask this bathymetry was actually built from.
    *
@@ -83,6 +114,7 @@ export class DepthField {
     this.origin = options.origin ?? new THREE.Vector2(-2048, -2048);
 
     this.landAt = options.landAt;
+    this.heightAt = options.heightAt;
     this.landMask = new Uint8Array(this.resolution * this.resolution);
     this.depth = this.generate();
 
@@ -146,8 +178,8 @@ export class DepthField {
         const worldX = this.origin.x + px * metresPerTexel;
 
         if (this.landAt) {
-          // Step 3 onward: the island's own baked mask. Same array the terrain mesh was
-          // built from, so the two coastlines are the same coastline by construction.
+          // The island's own baked mask. Same array the terrain mesh was built from, so the
+          // two coastlines are the same coastline by construction.
           land[py * n + px] = this.landAt(worldX, worldZ) ? 1 : 0;
           continue;
         }
@@ -168,6 +200,32 @@ export class DepthField {
     }
 
     this.landMask.set(land);
+
+    // THE HEIGHT-DRIVEN PATH — what runs whenever an island is supplying its topography.
+    //
+    // Depth is read straight off the ground. There is no distance transform, no contour
+    // wander to stop the bands running parallel to the coast, and no hand-placed shoal: the
+    // seabed already has relief of its own, coves are already shallower than headlands, and
+    // an offshore bank is already a bank. All three of those were compensations for not
+    // knowing what the ground was doing, and none of them survives knowing.
+    if (this.heightAt) {
+      const depth = new Float32Array(n * n);
+      for (let py = 0; py < n; py++) {
+        const worldZ = this.origin.y + py * metresPerTexel;
+        for (let px = 0; px < n; px++) {
+          const i = py * n + px;
+          if (land[i] === 1) { depth[i] = 0; continue; }
+          const worldX = this.origin.x + px * metresPerTexel;
+          const below = Math.max(0, -this.heightAt(worldX, worldZ));
+          depth[i] = Math.min(1, Math.max(0, sampleProfile(below, DEPTH_PROFILE)));
+        }
+      }
+      // No blur. The blur existed because a binary mask run through a distance transform
+      // steps in whole texels, and the steps showed along the waterline. A sampled height
+      // field is already continuous, so there is nothing to smooth and smoothing it would
+      // only drag the shelf away from the ground it is meant to be reporting.
+      return depth;
+    }
 
     // Exact Euclidean distance (in texels) from every water texel to the nearest land texel.
     const distanceTexels = euclideanDistanceTransform(land, n, n);
@@ -299,8 +357,7 @@ function euclideanDistanceTransform(mask: Uint8Array, width: number, height: num
   return grid;
 }
 
-function sampleProfile(distance: number): number {
-  const pts = SHELF_PROFILE;
+function sampleProfile(distance: number, pts: ReadonlyArray<readonly [number, number]> = SHELF_PROFILE): number {
   if (distance <= pts[0]![0]) return pts[0]![1];
   for (let i = 1; i < pts.length; i++) {
     const [d1, v1] = pts[i]!;

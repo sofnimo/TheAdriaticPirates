@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { ALL_SWATCHES, hexBytes } from '../art/palette';
+import { ALL_SWATCHES, hexBytes, SKY } from '../art/palette';
 import { LIGHT } from '../art/budgets';
 import { POST, POST_SABOTAGE, checkPostContract, linearLuminanceOfHex } from '../art/post';
 import { checkRendererContract } from '../app/RendererConfig';
@@ -60,6 +60,10 @@ const VIGNETTE_INNER_TOLERANCE = 1;
 /** The calibration card's sun stand-in, in LINEAR light. The sky dome's disc writes ~1.0
  *  over the sky gradient; 4.0 puts it unambiguously past any threshold in 04 §8.2's range. */
 const SUN_PATCH_LINEAR = 4.0;
+
+/** The card's full-frame backdrop: the brightest authored colour in the palette
+ *  (#ebedea, cloud lit). See the note on build() for why the card is not black. */
+const BACKDROP_HEX = SKY.cloudLit.hex;
 
 export type RGB = [number, number, number];
 
@@ -173,8 +177,6 @@ export class PostProbe {
 
   private readonly patches: Patch[] = [];
   private sunPatch: Patch;
-  /** Toggled off to ask "does anything in the PALETTE bloom", on to ask "does bloom work". */
-  private sunMesh!: THREE.Mesh;
   private readonly quad = new THREE.PlaneGeometry(1, 1);
   private readonly materials: THREE.Material[] = [];
 
