@@ -106,7 +106,14 @@ export const HAZE = Object.freeze({
   /** ~3 km view budget: "shift to cyan within ~3km", literally. */
   density: 0.00035,
   heightFalloff: 0.0012,
-  strength: 1.0,
+  /**
+   * Global multiplier on the whole aerial-perspective term, 0 = no haze at all.
+   *
+   * Separate from `density`, which sets how fast haze accumulates with distance. This scales
+   * the result, so it thins the atmosphere everywhere at once without moving the range at
+   * which the shift toward cyan happens.
+   */
+  strength: 0.42,
   /**
    * Haze fraction over which a saturation-holding surface (the sea) hands its saturation
    * back to the atmosphere. Late onset, sharp knee — 00 §3 rule 5's land curve is unchanged

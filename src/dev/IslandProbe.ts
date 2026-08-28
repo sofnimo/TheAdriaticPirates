@@ -64,6 +64,10 @@ export interface IslandReport {
   onPalette: boolean;
 
   triangles: number;
+  /** Islands the archipelago generated. Each draws terrain + overlay + canopy. */
+  islandCount: number;
+  /** Visible renderables in the scene graph — the ceiling the colour pass is culled down from. */
+  sceneMeshes: number;
   drawCalls: number;
   /** Extra draws the three cascades cost. Reported, not gated — see the note in run(). */
   shadowCalls: number;
@@ -112,6 +116,11 @@ export class IslandProbe {
     const autoWas = shadowMap.autoUpdate;
     shadowMap.autoUpdate = false;
     shadowMap.needsUpdate = false;
+    // Twice: the FIRST render after the flags change still carries whatever the shadow pass
+    // was going to do this frame, because three had already marked the maps dirty before the
+    // probe got a look in. The second is the one that is genuinely colour-only.
+    this.renderer.render(this.test.scene, this.test.camera);
+    shadowMap.needsUpdate = false;
     this.renderer.info.reset();
     this.renderer.render(this.test.scene, this.test.camera);
     const drawCalls = this.renderer.info.render.calls;
@@ -147,6 +156,8 @@ export class IslandProbe {
       paletteSamples: palette.samples,
       onPalette: palette.hits >= palette.samples * 0.8,
       triangles,
+      islandCount: this.test.archipelago.islands.length,
+      sceneMeshes: countRenderables(this.test.scene),
       drawCalls,
       shadowCalls,
       withinBudget,
@@ -271,6 +282,12 @@ export class IslandProbe {
         MAX_DRAW_CALLS + ') — ' + (r.withinBudget ? 'ok' : 'OVER'),
     );
     l.push('  plus ' + r.shadowCalls + ' draws across the shadow cascades (04 §3.1)');
+    // The visible count is mostly a function of how many islands the seed produced, since each
+    // one draws its ground, its long-grass overlay and its canopy. Printed so an over-budget
+    // frame can be read as content rather than guessed at.
+    l.push('  ' + r.islandCount + ' islands x 3 tiers, before frustum culling; ' +
+      (r.drawCalls + r.shadowCalls) + ' total draws in the full frame, from ' +
+      r.sceneMeshes + ' visible meshes in the graph');
     return l.join('\n');
   }
 }
@@ -418,3 +435,12 @@ const rgbHex = (c: RGB): string =>
   '#' + c.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
 
 const round2 = (v: number): number => Math.round(v * 100) / 100;
+
+/** Every visible mesh in the graph, so an over-budget frame can be attributed to content. */
+function countRenderables(root: THREE.Object3D): number {
+  let n = 0;
+  root.traverse((o) => {
+    if (o.visible && (o as THREE.Mesh).isMesh) n++;
+  });
+  return n;
+}
