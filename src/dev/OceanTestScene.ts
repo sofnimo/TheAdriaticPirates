@@ -8,7 +8,9 @@ import { TEST_ISLAND_SEED } from '../world/island/IslandSpec';
 import type { CoverField } from '../world/island/CoverField';
 import { ShoreAtlas } from '../world/shore/ShoreAtlas';
 import { makeShoreUniforms, updateFoamLOD, type ShoreUniforms } from '../world/shore/shoreUniforms';
-import { DEFAULT_SEA_STATE, SEA_STATES, swellDirection, type SeaStateName } from '../art/seaStates';
+import {
+  DEFAULT_SEA_STATE, SEA_STATES, swellDirection, swellTravelDirection, type SeaStateName,
+} from '../art/seaStates';
 import { globalUniforms } from '../render/shading/ShadingUniforms';
 import { WaveSurface } from '../world/ocean/waveSurface';
 import { ShelterField } from '../world/ocean/ShelterField';
@@ -582,9 +584,13 @@ export class OceanTestScene {
    * is why the field is baked at 32 m rather than at the elevation field's 5 m.
    */
   private rebakeShelter(): void {
-    const [dx, dz] = swellDirection(SEA_STATES[this.ocean.seaStateName]);
+    // The direction the swell TRAVELS, which is the opposite of the bearing the wave data is
+    // written in — see `swellTravelDirection`. Getting this backwards mirrors every wind
+    // shadow in the tile and, because the foam gates on the same field, every band of surf
+    // with them.
+    const [dx, dz] = swellTravelDirection(SEA_STATES[this.ocean.seaStateName]);
     const a = THREE.MathUtils.degToRad(this.ocean.headingOffsetDeg);
-    // The state's authored bearing, turned by however far the heading slider has moved it.
+    // Turned by however far the heading slider has moved it off the authored bearing.
     const cos = Math.cos(a);
     const sin = Math.sin(a);
     this.shelter.bake(dx * cos - dz * sin, dx * sin + dz * cos);

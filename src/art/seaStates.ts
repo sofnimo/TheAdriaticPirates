@@ -120,7 +120,35 @@ export function waveDirection(directionDeg: number): [number, number] {
   return [Math.sin(r), Math.cos(r)];
 }
 
-/** Dominant swell axis (wave 1) — glints stretch along this. */
+/**
+ * Dominant swell AXIS (wave 1) — glints stretch along this.
+ *
+ * An axis, not an arrow. Glints are stretched along the swell and do not care which way it is
+ * running, so this was never wrong for its original caller and its sign was never pinned down.
+ * Anything that needs the arrow must use `swellTravelDirection` below.
+ */
 export function swellDirection(state: SeaState): [number, number] {
   return waveDirection(state.waves[0].directionDeg);
+}
+
+/**
+ * The direction the swell actually TRAVELS — the opposite of `waveDirection`.
+ *
+ * The minus sign is not a fudge, it falls out of the phase convention in `gerstner.glsl`:
+ *
+ *     phase = k * dot(d, worldXZ) + omega * uWaveTime
+ *
+ * A crest is a line of constant phase, so as time advances `dot(d, worldXZ)` must DECREASE to
+ * hold it — the crest moves along -d. The `+omega*t` makes `d` the bearing the swell comes
+ * FROM, which is also how a sailor would name a wind, so nothing in the data was mislabelled.
+ *
+ * It cost a mirrored world to notice. The fetch field marched its ray along `swellDirection`
+ * assuming that was the way the waves were going, so every island sheltered its windward face
+ * and left its lee exposed, and the foam — gated on that same field — broke on the calm side.
+ * Both were consistent, both were backwards, and consistency is exactly what makes this class
+ * of error survive: nothing disagrees with anything, the whole picture is just flipped.
+ */
+export function swellTravelDirection(state: SeaState): [number, number] {
+  const [x, z] = waveDirection(state.waves[0].directionDeg);
+  return [-x, -z];
 }

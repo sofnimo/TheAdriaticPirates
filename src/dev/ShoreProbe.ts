@@ -336,9 +336,19 @@ export class ShoreProbe {
     // wavelength and the check reported 3% motion on foam that travels with the sea. Deriving
     // the step from the wave the foam is actually sitting on keeps it correct across sea
     // states, whose periods differ by a factor of two.
+    // ACROSS A WHOLE PERIOD, not one pair of moments.
+    //
+    // Two frames half a period apart can land on two phases that happen to look alike, and a
+    // crest-gated foam that is genuinely travelling then measures as barely moving — it read
+    // 9.95% against a 10% floor on foam that plainly moves. Sampling through the period and
+    // counting a pixel as moved if it differs at ANY of them asks the question that was meant:
+    // does this foam change, or is it painted on. A static band still scores zero.
     const primary = this.test.ocean.dominantWavePeriod;
-    this.test.setWaveTime(t0 + primary * 0.5);
-    const b = this.read();
+    const later: Framebuffer[] = [];
+    for (let i = 1; i <= 3; i++) {
+      this.test.setWaveTime(t0 + (primary * i) / 4);
+      later.push(this.read());
+    }
     this.test.setWaveTime(t0);
 
     const region = {
@@ -364,9 +374,15 @@ export class ShoreProbe {
         const d = atlas.distanceAt(hit.x, hit.z);
         if (d < 0 || d > reach) continue;
         const pa = readPixel(a, x, y);
-        if (!(pa[2] > pa[0] + 12 || maxChannelDelta(pa, readPixel(b, x, y)) > 6)) continue;
+        // Moved if it differs at ANY sampled phase.
+        let moved = false;
+        for (const f of later) {
+          if (maxChannelDelta(pa, readPixel(f, x, y)) > 6) { moved = true; break; }
+        }
+        // Water, or somewhere foam appeared at some point in the cycle.
+        if (!(pa[2]! > pa[0]! + 12 || moved)) continue;
         samples++;
-        if (maxChannelDelta(pa, readPixel(b, x, y)) > 6) changed++;
+        if (moved) changed++;
       }
     }
     return { samples, changed: samples > 0 ? changed / samples : 0 };
