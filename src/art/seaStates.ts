@@ -147,8 +147,15 @@ export function swellDirection(state: SeaState): [number, number] {
  * and left its lee exposed, and the foam — gated on that same field — broke on the calm side.
  * Both were consistent, both were backwards, and consistency is exactly what makes this class
  * of error survive: nothing disagrees with anything, the whole picture is just flipped.
+ *
+ * TAKE THE OFFSET HERE rather than rotating the returned vector. `waveDirection` maps a
+ * COMPASS bearing, which increases clockwise from +Z, so turning the heading is not the same
+ * operation as the ordinary counter-clockwise rotation matrix on (x, z) — it is its mirror.
+ * Rotating the vector instead of the bearing sent the wind shadows one way while the waves
+ * went the other, at twice the slider's angle. At an offset of zero the two agreed exactly,
+ * which is precisely why it went unseen.
  */
-export function swellTravelDirection(state: SeaState): [number, number] {
-  const [x, z] = waveDirection(state.waves[0].directionDeg);
+export function swellTravelDirection(state: SeaState, offsetDeg = 0): [number, number] {
+  const [x, z] = waveDirection(state.waves[0].directionDeg + offsetDeg);
   return [-x, -z];
 }

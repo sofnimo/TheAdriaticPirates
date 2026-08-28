@@ -85,8 +85,8 @@ export class Ocean {
       uShelterMap: { value: null },
       uShelterOrigin: { value: new THREE.Vector2() },
       uShelterSize: { value: 1 },
-      /** Amplitude left in the deepest lee. Not 0 — dead-flat water reads as a hole. */
-      uShelterMin: { value: 0.08 },
+      /** Amplitude left in the deepest lee. Zero: the calm side is flat, not merely quieter. */
+      uShelterMin: { value: 0 },
       uShelterEnable: { value: 0 },
 
       // --- depth signal (sea_depth.glsl) ---

@@ -43,7 +43,7 @@ export class WaveSurface {
    */
   shelter: { exposureAt(x: number, z: number): number } | null = null;
   /** Matches the shader's `uShelterMin`: what is left of the waves in the deepest lee. */
-  shelterMin = 0.08;
+  shelterMin = 0;
 
   private waves: Wave[] = [];
 

@@ -588,12 +588,13 @@ export class OceanTestScene {
     // written in — see `swellTravelDirection`. Getting this backwards mirrors every wind
     // shadow in the tile and, because the foam gates on the same field, every band of surf
     // with them.
-    const [dx, dz] = swellTravelDirection(SEA_STATES[this.ocean.seaStateName]);
-    const a = THREE.MathUtils.degToRad(this.ocean.headingOffsetDeg);
-    // Turned by however far the heading slider has moved it off the authored bearing.
-    const cos = Math.cos(a);
-    const sin = Math.sin(a);
-    this.shelter.bake(dx * cos - dz * sin, dx * sin + dz * cos);
+    // The heading offset goes into the BEARING, not into a rotation of the result — the same
+    // arithmetic `Ocean.applySeaState` does to the waves, so the two cannot diverge. Rotating
+    // the vector instead turned the shadows the wrong way at twice the slider's angle.
+    const [dx, dz] = swellTravelDirection(
+      SEA_STATES[this.ocean.seaStateName], this.ocean.headingOffsetDeg,
+    );
+    this.shelter.bake(dx, dz);
   }
 
   /** Force the wave clock, for the frame-to-frame stability probe. */
