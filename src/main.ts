@@ -322,6 +322,7 @@ if (sceneName === 'palette') {
   const params = {
     view: (isView(viewParam) ? viewParam : 'cove') as OceanViewName,
     seaState: test.ocean.seaStateName as SeaStateName,
+    waveHeading: test.ocean.waveHeadingDeg,
     timeOfDay: 'lateMorning' as TimeOfDayName,
     sunElevation: test.sun.elevationDeg,
     sunAzimuth: test.sun.azimuthDeg,
@@ -352,10 +353,22 @@ if (sceneName === 'palette') {
     .add(params, 'seaState', SEA_STATE_OPTIONS)
     .name('sea state')
     .onChange((v: SeaStateName) => {
-      test.ocean.applySeaState(v);
+      // Through the scene, so the hull's copy of the wave stack moves with the shader's.
+      test.setSeaState(v);
       params.glintCoverage = u.uGlintCoverage!.value as number;
+      // A sea state carries its own bearing, so the heading slider has just been moved for you.
+      params.waveHeading = test.ocean.waveHeadingDeg;
+      headingCtl.updateDisplay();
       runGate();
     });
+  // The whole stack turns together, keeping the spread the sea state authored between its four
+  // components — aim them independently and it stops being a swell and becomes four unrelated
+  // waves crossing. The glint field's stretch axis turns with it, or the marks would lie across
+  // the crests instead of down them.
+  const headingCtl = folder
+    .add(params, 'waveHeading', 0, 360, 1)
+    .name('swell heading (deg from N)')
+    .onChange((v: number) => test.setWaveHeading(v));
   folder
     .add(params, 'timeOfDay', TIME_OF_DAY_NAMES as unknown as string[])
     .name('time of day')

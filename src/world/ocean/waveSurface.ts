@@ -40,9 +40,18 @@ export class WaveSurface {
     this.setState(state);
   }
 
-  setState(name: SeaStateName): void {
+  /**
+   * Rotation applied to the stack, in degrees. MUST match the ocean material's.
+   *
+   * The hull floats on this and the shader draws from `uWaves`; they are two readers of one
+   * wave stack, and the scene keeps them equal by assignment for exactly the same reason it
+   * assigns one wave clock to both. Let the two headings drift apart and the aircraft rides a
+   * swell running at an angle to the one on screen — the failure would look like bad physics
+   * rather than like a missing assignment, which is what makes it worth naming here.
+   */
+  setState(name: SeaStateName, headingOffsetDeg = 0): void {
     this.waves = SEA_STATES[name].waves.map((w) => {
-      const [dx, dz] = waveDirection(w.directionDeg);
+      const [dx, dz] = waveDirection(w.directionDeg + headingOffsetDeg);
       const k = (Math.PI * 2) / Math.max(w.wavelength, 0.001);
       return {
         dx,

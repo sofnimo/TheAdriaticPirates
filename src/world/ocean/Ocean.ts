@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { COAST, SEA } from '../../art/palette';
 import { GLINT_RULE } from '../../art/seaRamp';
 import { SURFACES } from '../../art/surfaces';
-import { DEFAULT_SEA_STATE, SEA_STATES, swellDirection, waveDirection, type SeaStateName } from '../../art/seaStates';
+import { DEFAULT_SEA_STATE, SEA_STATES, waveDirection, type SeaStateName } from '../../art/seaStates';
 import { OCEAN } from '../../art/budgets';
 import { globalUniforms, shadowUniforms } from '../../render/shading/ShadingUniforms';
 import { DepthField } from '../depth/DepthField';
@@ -40,6 +40,8 @@ export class Ocean {
   /** The sampled depth LUT, baked from art/seaRamp.ts. Owned here; released by dispose(). */
   readonly rampTexture: THREE.DataTexture;
   private seaState: SeaStateName;
+  /** Degrees the whole wave stack is rotated off its authored bearing. See waveHeadingDeg. */
+  private headingOffset = 0;
 
   constructor(
     scene: THREE.Scene,
@@ -189,20 +191,48 @@ export class Ocean {
     return this.rings.triangles <= OCEAN.maxTriangles;
   }
 
-  applySeaState(name: SeaStateName): void {
+  /**
+   * Compass heading of the dominant swell, degrees clockwise from north.
+   *
+   * Read and written as an ABSOLUTE bearing, but stored as an offset from whatever the current
+   * sea state authored, so the four waves keep the spread between them. A stack whose
+   * components could be aimed independently would stop being a swell and become four unrelated
+   * waves crossing, which is a different sea entirely.
+   */
+  get waveHeadingDeg(): number {
+    return SEA_STATES[this.seaState].waves[0].directionDeg + this.headingOffset;
+  }
+
+  /** Degrees the stack is rotated off the authored bearing. The hull needs the same number. */
+  get headingOffsetDeg(): number {
+    return this.headingOffset;
+  }
+
+  setWaveHeading(deg: number): void {
+    this.headingOffset = deg - SEA_STATES[this.seaState].waves[0].directionDeg;
+    this.applySeaState(this.seaState, true);
+  }
+
+  applySeaState(name: SeaStateName, keepHeading = false): void {
     this.seaState = name;
+    // A sea state carries its own bearing, the way a time-of-day preset carries the sun's, so
+    // picking one resets the rotation unless the caller is only re-applying to change heading.
+    if (!keepHeading) this.headingOffset = 0;
     const state = SEA_STATES[name];
 
     const waves = this.uniforms.uWaves!.value as THREE.Vector4[];
     const steepness = this.uniforms.uSteepness!.value as number[];
 
     state.waves.forEach((w, i) => {
-      const [dx, dz] = waveDirection(w.directionDeg);
+      const [dx, dz] = waveDirection(w.directionDeg + this.headingOffset);
       waves[i]!.set(dx, dz, w.wavelength, w.amplitude);
       steepness[i] = w.steepness;
     });
 
-    const [sx, sz] = swellDirection(state);
+    // The glint field stretches its marks ALONG the swell (02 §3.1), so this has to turn with
+    // the waves. Left behind, the marks would lie across the crests instead of down them,
+    // which is the one thing the measured 6:1 aspect ratio exists to get right.
+    const [sx, sz] = waveDirection(state.waves[0].directionDeg + this.headingOffset);
     (this.uniforms.uSwellDir!.value as THREE.Vector2).set(sx, sz);
     this.uniforms.uGlintCoverage!.value = state.glintCoverage;
   }

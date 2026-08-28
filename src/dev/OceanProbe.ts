@@ -145,11 +145,31 @@ export class OceanProbe {
     // every mark edge straight into the max-step figure the smoothness gate reads.
     // Order matters: setView() calls Ocean.update(), which recomputes uGlintFade from
     // camera altitude. Setting the uniform first would simply be overwritten.
+    // Cast shadows off for the same reason, and it is the same reason twice over. This scanline
+    // measures the DEPTH ramp, which 02 requires to be continuous; a cast shadow on water is a
+    // deliberate hard cut, and 04 §3.3 is emphatic that it must be. Once the cascades reached
+    // the whole tile a shadow edge started crossing this transect and registered as an 88/255
+    // band edge — the gate reporting one contract's success as another's failure. Neither
+    // number was wrong; they were measured through each other.
     this.test.setView('shelf');
+    const shadowsWere = this.test.sun.shadows.enabled;
+    this.test.sun.shadows.setEnabled(false);
     const glintFade = this.test.ocean.uniforms.uGlintFade!.value as number;
     this.test.ocean.uniforms.uGlintFade!.value = 0;
+    // And the foam, which is the third hard edge painted over this ramp and the one that
+    // actually bit: 02b quantises the run-up into flat tones on purpose, so the ring is a step
+    // of tens of units sitting a few pixels off the waterline. Whether it lands inside this
+    // transect is a matter of how close the framing starts to shore, which is why the gate
+    // passed for a long time and then did not — the measurement was always this fragile, the
+    // camera just used to be standing further out.
+    const foamEnable = this.test.shoreUniforms.uFoamEnable!.value as number;
+    this.test.shoreUniforms.uFoamEnable!.value = 0;
+
     const shelf = this.probeShelf(this.renderAndRead());
+
+    this.test.shoreUniforms.uFoamEnable!.value = foamEnable;
     this.test.ocean.uniforms.uGlintFade!.value = glintFade;
+    this.test.sun.shadows.setEnabled(shadowsWere);
 
     // Glints are measured on the SKIM view, not the top-down one: coverage is a pixel
     // fraction, so it only compares like-for-like against image-4.jpg at image-4's framing.

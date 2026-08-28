@@ -513,6 +513,27 @@ export class OceanTestScene {
     updateFoamLOD(this.shoreUniforms, this.camera.position.y);
   }
 
+  /**
+   * ONE WAVE STACK, TWO READERS — and both of these have to go through here.
+   *
+   * The ocean material draws the waves and `WaveSurface` floats the hull on them. They are the
+   * same stack read twice, exactly like the wave clock a few lines below, and the same rule
+   * applies: assign to both from one place rather than hoping two call sites stay in step. The
+   * sea-state dropdown used to call `ocean.applySeaState` alone, which left the aircraft riding
+   * whatever swell had been selected previously — a bug that reads as bad physics rather than
+   * as a missing line, and therefore one nobody goes looking for in the right place.
+   */
+  setSeaState(name: SeaStateName): void {
+    this.ocean.applySeaState(name);
+    this.waveSurface.setState(name, this.ocean.headingOffsetDeg);
+  }
+
+  /** Compass bearing of the dominant swell. Rotates the whole stack; see Ocean. */
+  setWaveHeading(deg: number): void {
+    this.ocean.setWaveHeading(deg);
+    this.waveSurface.setState(this.ocean.seaStateName, this.ocean.headingOffsetDeg);
+  }
+
   /** Force the wave clock, for the frame-to-frame stability probe. */
   setWaveTime(t: number): void {
     this.time = t;
