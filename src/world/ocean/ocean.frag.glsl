@@ -69,7 +69,12 @@ void main() {
   // Glint colour is derived from the shaded water beneath it (hue held, saturation halved,
   // lightness lifted +0.185) rather than from fixed hexes, so it tracks the depth ramp.
   vec4 glint = glintField(vWorldPos.xz, facing, color, depth01, length(cameraPosition - vWorldPos));
-  color = mix(color, glint.rgb, glint.a);
+  // Sheltered water carries almost no sparkle, and this is the thing `art/seaRamp.ts` has had
+  // depth standing in for since it was written: "depth is the stand-in for shelter until Step 4
+  // brings a fetch/wind field". Both cove reference frames measure zero glint coverage across
+  // the whole turquoise shelf, and it is not because the water there is shallow — it is because
+  // nothing is disturbing it. Now that the fetch field exists, it says so directly.
+  color = mix(color, glint.rgb, glint.a * shelterExposure(vWorldPos.xz));
 
   // ---- shoreline foam ---------------------------------------------------------
   // Laid over the water AFTER the ramp and the glints, and BEFORE the haze:

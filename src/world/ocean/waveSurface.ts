@@ -34,6 +34,17 @@ export class WaveSurface {
   /** Seconds. Must be the same value the ocean material's `uWaveTime` is holding. */
   time = 0;
 
+  /**
+   * The same fetch field the shader scales its waves by, or null for open sea everywhere.
+   *
+   * Without it the hull rides a full sea inside a cove the shader is drawing flat — and that
+   * is not a cosmetic mismatch. A sheltered anchorage is the one place a seaplane can actually
+   * work (03 §4.3), so the calm has to be real to the physics, not just painted.
+   */
+  shelter: { exposureAt(x: number, z: number): number } | null = null;
+  /** Matches the shader's `uShelterMin`: what is left of the waves in the deepest lee. */
+  shelterMin = 0.08;
+
   private waves: Wave[] = [];
 
   constructor(state: SeaStateName) {
@@ -75,6 +86,15 @@ export class WaveSurface {
       out.x += w.q * w.amplitude * w.dx * c;
       out.z += w.q * w.amplitude * w.dz * c;
       out.y += w.amplitude * Math.sin(phase);
+    }
+    // Scaled on the accumulated offset, not per wave, for the same reason `gerstner.glsl`
+    // does it that way: `q` carries `1 / amplitude`, so scaling each wave's amplitude would
+    // leave the horizontal term untouched and the hull would still slide about in flat water.
+    if (this.shelter) {
+      const s = this.shelterMin + (1 - this.shelterMin) * this.shelter.exposureAt(x, z);
+      out.x *= s;
+      out.y *= s;
+      out.z *= s;
     }
   }
 

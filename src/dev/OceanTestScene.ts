@@ -11,6 +11,7 @@ import { makeShoreUniforms, updateFoamLOD, type ShoreUniforms } from '../world/s
 import { DEFAULT_SEA_STATE, SEA_STATES, swellDirection, type SeaStateName } from '../art/seaStates';
 import { globalUniforms } from '../render/shading/ShadingUniforms';
 import { WaveSurface } from '../world/ocean/waveSurface';
+import { ShelterField } from '../world/ocean/ShelterField';
 import { Seaplane } from '../game/flight/Seaplane';
 
 /**
@@ -311,6 +312,8 @@ export class OceanTestScene {
   readonly shoreUniforms: ShoreUniforms;
   /** The sea surface the hull floats on. The same four waves the ocean shader draws. */
   readonly waveSurface: WaveSurface;
+  /** Fetch field: where the islands are blocking the swell. See ShelterField. */
+  readonly shelter: ShelterField;
   readonly seaplane: Seaplane;
   readonly devOverlay = new THREE.Scene();
 
@@ -445,6 +448,18 @@ export class OceanTestScene {
     // The hull floats on the SAME four waves the ocean shader draws — one wave stack, two
     // readers, for the same reason the land mask and the bathymetry share one array.
     this.waveSurface = new WaveSurface(seaState);
+
+    // --- shelter ---------------------------------------------------------------------------
+    // Baked from the land mask and the swell's bearing, then handed to all three readers: the
+    // ocean material scales its waves by it, the glints thin over it, and the hull floats on
+    // it. Built here rather than inside `Ocean` because it needs the islands, which the ocean
+    // knows nothing about.
+    this.shelter = new ShelterField(this.archipelago.field);
+    this.ocean.attachShelter(this.shelter);
+    this.waveSurface.shelter = this.shelter;
+    this.waveSurface.shelterMin = this.ocean.uniforms.uShelterMin!.value as number;
+    this.rebakeShelter();
+
     const mooring = findMooring(this.archipelago.field, this.shoreAtlas);
     // Nose down the lane, along strike: that is where the open water is, and a seaplane
     // needs a kilometre of it.
@@ -526,12 +541,38 @@ export class OceanTestScene {
   setSeaState(name: SeaStateName): void {
     this.ocean.applySeaState(name);
     this.waveSurface.setState(name, this.ocean.headingOffsetDeg);
+    // A sea state resets the heading to its own authored bearing, so the wind shadows move
+    // with it and have to be re-cast.
+    this.rebakeShelter();
+  }
+
+  /** Metres of open water the swell must cross to recover a full sea behind an island. */
+  setShelterReach(metres: number): void {
+    (this.shelter as { fullFetch: number }).fullFetch = metres;
+    this.rebakeShelter();
   }
 
   /** Compass bearing of the dominant swell. Rotates the whole stack; see Ocean. */
   setWaveHeading(deg: number): void {
     this.ocean.setWaveHeading(deg);
     this.waveSurface.setState(this.ocean.seaStateName, this.ocean.headingOffsetDeg);
+    this.rebakeShelter();
+  }
+
+  /**
+   * Re-cast the wind shadows for the current swell bearing.
+   *
+   * Every island's lee is on the side the swell is going TOWARD, so turning the swell moves
+   * every sheltered patch of water in the tile. A few milliseconds at this resolution, which
+   * is why the field is baked at 32 m rather than at the elevation field's 5 m.
+   */
+  private rebakeShelter(): void {
+    const [dx, dz] = swellDirection(SEA_STATES[this.ocean.seaStateName]);
+    const a = THREE.MathUtils.degToRad(this.ocean.headingOffsetDeg);
+    // The state's authored bearing, turned by however far the heading slider has moved it.
+    const cos = Math.cos(a);
+    const sin = Math.sin(a);
+    this.shelter.bake(dx * cos - dz * sin, dx * sin + dz * cos);
   }
 
   /** Force the wave clock, for the frame-to-frame stability probe. */

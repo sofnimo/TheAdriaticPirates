@@ -9,6 +9,7 @@ import { DepthField } from '../depth/DepthField';
 import { buildOceanRings, DEFAULT_RING_LEVELS, type OceanRings } from './RingMesh';
 import { buildSeaRampTexture } from './SeaRampTexture';
 import type { ShoreUniforms } from '../shore/shoreUniforms';
+import type { ShelterField } from './ShelterField';
 
 import OCEAN_VERT from './ocean.vert.glsl';
 import OCEAN_FRAG from './ocean.frag.glsl';
@@ -76,6 +77,17 @@ export class Ocean {
       // landing/taxi camera.
       uDisplaceFadeStart: { value: 25 },
       uDisplaceFadeEnd: { value: 45 },
+
+      // --- shelter (ShelterField) ---
+      // Attached by the scene once the islands exist, the same way the shore block is. Until
+      // then `uShelterEnable` is 0 and every lookup answers "open sea", so the sea is simply
+      // the sea state it was given.
+      uShelterMap: { value: null },
+      uShelterOrigin: { value: new THREE.Vector2() },
+      uShelterSize: { value: 1 },
+      /** Amplitude left in the deepest lee. Not 0 — dead-flat water reads as a hole. */
+      uShelterMin: { value: 0.08 },
+      uShelterEnable: { value: 0 },
 
       // --- depth signal (sea_depth.glsl) ---
       uBathymetry: { value: depthField.texture },
@@ -211,6 +223,19 @@ export class Ocean {
   setWaveHeading(deg: number): void {
     this.headingOffset = deg - SEA_STATES[this.seaState].waves[0].directionDeg;
     this.applySeaState(this.seaState, true);
+  }
+
+  /**
+   * Attach the baked fetch field. Late, because it is baked FROM the island land mask.
+   *
+   * Same shape as `attachShore`: the sea cannot know about shelter until there is something to
+   * be sheltered by, so the block is built empty and filled once the archipelago exists.
+   */
+  attachShelter(field: ShelterField): void {
+    this.uniforms.uShelterMap!.value = field.texture;
+    (this.uniforms.uShelterOrigin!.value as THREE.Vector2).set(field.originX, field.originZ);
+    this.uniforms.uShelterSize!.value = field.worldSize;
+    this.uniforms.uShelterEnable!.value = 1;
   }
 
   applySeaState(name: SeaStateName, keepHeading = false): void {

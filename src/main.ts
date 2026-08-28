@@ -323,6 +323,8 @@ if (sceneName === 'palette') {
     view: (isView(viewParam) ? viewParam : 'cove') as OceanViewName,
     seaState: test.ocean.seaStateName as SeaStateName,
     waveHeading: test.ocean.waveHeadingDeg,
+    shelterMin: u.uShelterMin!.value as number,
+    shelterReach: test.shelter.fullFetch,
     timeOfDay: 'lateMorning' as TimeOfDayName,
     sunElevation: test.sun.elevationDeg,
     sunAzimuth: test.sun.azimuthDeg,
@@ -369,6 +371,25 @@ if (sceneName === 'palette') {
     .add(params, 'waveHeading', 0, 360, 1)
     .name('swell heading (deg from N)')
     .onChange((v: number) => test.setWaveHeading(v));
+
+  // --- shelter ----------------------------------------------------------------------------
+  // The lee of an island. Turning the heading above re-casts these wind shadows, so the calm
+  // water is always on the far side from wherever the swell is now coming from.
+  const shelterFolder = folder.addFolder('shelter (island lee)');
+  shelterFolder
+    .add(params, 'shelterMin', 0, 0.5, 0.01)
+    .name('waves left in the lee')
+    // Live: a plain uniform on the shader side, and one number on the hull's side that has to
+    // match it or the aircraft rides a different sea from the one being drawn.
+    .onChange((v: number) => {
+      u.uShelterMin!.value = v;
+      test.waveSurface.shelterMin = v;
+    });
+  shelterFolder
+    .add(params, 'shelterReach', 200, 3000, 50)
+    .name('reach to full sea (m)')
+    // Structural: re-marches the whole field, so it waits for the drag to finish.
+    .onFinishChange((v: number) => test.setShelterReach(v));
   folder
     .add(params, 'timeOfDay', TIME_OF_DAY_NAMES as unknown as string[])
     .name('time of day')
