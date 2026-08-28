@@ -48,6 +48,30 @@ float waveShelter(vec2 worldXZ) {
   return mix(clamp(uShelterMin, 0.0, 1.0), 1.0, shelterExposure(worldXZ));
 }
 
+/**
+ * Where this point sits between trough and crest, -1 to 1.
+ *
+ * The vertical term of the stack alone, divided by the amplitude it could reach — so it is the
+ * PHASE of the surface rather than its height, and a threshold on it means the same thing in a
+ * flat sea as in a heavy one. That is what the foam needs: "the tips of the waves" is a
+ * statement about where you are on the wave, not about how many metres up.
+ *
+ * Deliberately free of the shelter scale, which `waveShelter` would otherwise apply twice —
+ * the foam gates on exposure separately, and a crest is still a crest in calm water.
+ */
+float gerstnerCrest(vec2 worldXZ) {
+  float h = 0.0;
+  float amp = 0.0;
+  for (int i = 0; i < 4; i++) {
+    float A = uWaves[i].w;
+    float k = 6.28318530718 / max(uWaves[i].z, 0.001);
+    float phase = k * dot(normalize(uWaves[i].xy), worldXZ) + sqrt(GERSTNER_G * k) * uWaveTime;
+    h += A * sin(phase);
+    amp += A;
+  }
+  return h / max(amp, 1e-4);
+}
+
 /** Horizontal + vertical displacement at a world XZ position. */
 vec3 gerstnerOffset(vec2 worldXZ) {
   vec3 offset = vec3(0.0);

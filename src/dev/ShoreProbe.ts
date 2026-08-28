@@ -210,11 +210,38 @@ export class ShoreProbe {
    * reporting how much open water happened to be in shot.
    */
   private probeFoamNear(): { coverage: number; tones: number; toneColors: string[]; concentration: number; beyondRange: number } {
+    // MEASURED AT RANGE, where the foam is a steady band.
+    //
+    // Foam now has two regimes: crest-gated up close, a continuous band far off. Coverage has
+    // to be measured in the second one, and the reason is not convenience. Close in, whether a
+    // given stretch of shore is foaming depends on where the crests happen to be at the instant
+    // the frame is taken — and the shore view frames about 60 m of water against a 55-170 m
+    // swell, so a single frame can legitimately contain no crest at all. That is what this
+    // check was doing: it reported 0% coverage on a system whose foam a CPU model of the same
+    // gates put at 40% of the windward nearshore, and which was plainly visible on screen. The
+    // measurement was narrower than the thing it measured.
+    //
+    // Backed off, the band is steady and always there, so presence becomes a fact about the
+    // island rather than about the shutter. Motion is checked separately, up close, where it
+    // is the thing that matters.
     this.test.setView('shore');
+    const camera = this.test.camera;
+    const home = camera.position.clone();
+    const target = this.test.shoreTarget.clone();
+    camera.position.copy(target).addScaledVector(
+      new THREE.Vector3().subVectors(home, target).normalize(), 750,
+    );
+    camera.position.y = 260;
+    camera.lookAt(target);
+    camera.updateMatrixWorld(true);
+
     const withFoam = this.read();
     this.setFoam(false);
     const without = this.read();
     this.setFoam(true);
+    // The camera stays where it was rendered from until the pixels have been read back AND
+    // mapped to world positions below — the raycast that does that mapping uses this camera,
+    // so restoring it here would ray-trace the far frame through the near camera.
 
     const region = {
       x0: Math.round(withFoam.width * 0.05),
@@ -223,7 +250,6 @@ export class ShoreProbe {
       y1: Math.round(withFoam.height * 0.95),
     };
 
-    const camera = this.test.camera;
     const atlas = this.test.shoreAtlas;
     const ray = new THREE.Raycaster();
     const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -241,7 +267,7 @@ export class ShoreProbe {
         ray.setFromCamera(ndc, camera);
         const onWater = ray.ray.intersectPlane(plane, hit) !== null;
         const d = onWater ? atlas.distanceAt(hit.x, hit.z) : Number.POSITIVE_INFINITY;
-        const reach = this.test.shoreUniforms.uRunupReach!.value as number;
+        const reach = this.test.shoreUniforms.uFoamReach!.value as number;
         const withinBand = onWater && d >= 0 && d <= reach;
         const withinAtlas = onWater && d >= 0 && d <= atlas.maxShoreDistance;
         void withinAtlas;
@@ -277,6 +303,11 @@ export class ShoreProbe {
     const top3 = toneBuckets.slice(0, 3).reduce((sum, t) => sum + t.count, 0);
     const concentration = foam > 0 ? top3 / foam : 0;
 
+    // Now that the pixels have been mapped back to world positions, the camera can go home.
+    camera.position.copy(home);
+    camera.lookAt(target);
+    camera.updateMatrixWorld(true);
+
     return {
       coverage: inRange > 0 ? foam / inRange : 0,
       tones: toneBuckets.length,
@@ -297,9 +328,16 @@ export class ShoreProbe {
     this.test.setView('shore');
     const t0 = this.test.waveTime;
     const a = this.read();
-    // A run-up cycle is 1 / uRunupSpeed seconds; step most of the way through one.
-    const speed = this.test.shoreUniforms.uRunupSpeed!.value as number;
-    this.test.setWaveTime(t0 + 0.62 / Math.max(speed, 0.05));
+    // HALF A WAVE PERIOD, computed from the swell itself.
+    //
+    // This used to step one run-up cycle, which is the right clock for a swash band and the
+    // wrong one for foam that rides the crests. A run-up cycle is about a second; the dominant
+    // swell has a period of eight to ten, so stepping a second moved the crests a tenth of a
+    // wavelength and the check reported 3% motion on foam that travels with the sea. Deriving
+    // the step from the wave the foam is actually sitting on keeps it correct across sea
+    // states, whose periods differ by a factor of two.
+    const primary = this.test.ocean.dominantWavePeriod;
+    this.test.setWaveTime(t0 + primary * 0.5);
     const b = this.read();
     this.test.setWaveTime(t0);
 
@@ -311,7 +349,7 @@ export class ShoreProbe {
     };
     const camera = this.test.camera;
     const atlas = this.test.shoreAtlas;
-    const reach = this.test.shoreUniforms.uRunupReach!.value as number;
+    const reach = this.test.shoreUniforms.uFoamReach!.value as number;
     const ray = new THREE.Raycaster();
     const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     const hit = new THREE.Vector3();

@@ -22,11 +22,21 @@ export function makeShoreUniforms(atlas: ShoreAtlas): ShoreUniforms {
     uShoreOrigin: { value: new THREE.Vector2(atlas.originX, atlas.originZ) },
     uShoreWorldSize: { value: atlas.worldSize },
     uMaxShoreDist: { value: atlas.maxShoreDistance },
-    uRingWidth: { value: 1.3 },
-    uRunupReach: { value: 12 },
+    // The surf zone. 100 m offshore, per the brief; the atlas must be baked wide enough to
+    // represent it, which is why ShoreAtlas is constructed with a larger maxShoreDistance.
+    uFoamReach: { value: 100 },
+    // Crest phase foam starts at, on the -1..1 wave. 0.45 puts it on the top quarter of the
+    // wave rather than over the whole upper half, which is what reads as "the tips".
+    uFoamCrest: { value: 0.45 },
+    uFoamCrestSoft: { value: 0.18 },
+    // Where the two readings hand over. Inside 180 m the foam rides the crests; past 600 m it
+    // is a steady band. It blends between, so flying in never shows a switch.
+    uFoamCrestNear: { value: 180 },
+    uFoamCrestFar: { value: 600 },
+    // Fetch below which a coast does not foam at all. The lee is glassy, not lightly flecked.
+    uFoamExposure: { value: 0.35 },
     uRunupSpeed: { value: 0.62 },
     uRunupFreq: { value: 0.12 },
-    uRunupCycles: { value: 1.6 },
     uFoamSteps: { value: 3 },
     uFoamDetailLOD: { value: 1 },
     cFoam: { value: new THREE.Color(SEA.crestHigh.hex) },

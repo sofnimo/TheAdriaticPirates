@@ -2,14 +2,20 @@
 #include ./hash_noise.glsl;
 
 // =====================================================================
-// SHORELINE FOAM — `02b — Coastal Waves.md` §2.
+// SHORELINE FOAM — breaking crests in the nearshore.
 //
-// Two additive layers on one baked atlas (§2.1):
-//   1. a static ring clamped to the first metre or so of water, always on, never animated;
-//   2. an animated run-up band driven by an asymmetric sawtooth, whose reach scales with the
-//      coastline's exposure channel.
+// A DEPARTURE FROM 02b §2.1, which specifies a static waterline ring plus an animated swash
+// run-up, and the reason is worth stating because the doc is otherwise followed closely. Both
+// of those layers treat foam as a property of the COASTLINE — a stroke that hugs the shore all
+// the way round an island, on every side of it at once. That is a fair model of a beach seen
+// from the sand. It is the wrong model from a seaplane at 200-1500 m, where what you actually
+// read is which face of an island is taking the sea: whitecaps piling on the windward shore
+// while the far side sits glassy. The old version drew the same collar on both.
 //
-// Both go through quantizeFoam() before they are used. 02b §2.2 is unusually direct about
+// So foam is now a property of the water, gated on three things at once — nearshore, facing
+// the incoming swell, and at the crest of a wave. See `shoreFoam` below.
+//
+// The quantiser survives unchanged. 02b §2.2 is unusually direct about
 // this — every source it surveyed defaults to a bare smoothstep, and the doc says override
 // that. One smoothstep for antialiasing, then floor() to flat bands. The §9 checklist repeats
 // it as "never ship a raw smoothstep foam edge", so it is the one thing here with its own
@@ -19,12 +25,15 @@
 uniform sampler2D uShoreAtlas;
 uniform vec2 uShoreOrigin;      // world XZ of the atlas's min corner
 uniform float uShoreWorldSize;  // metres covered by the atlas
-uniform float uMaxShoreDist;    // 60 m — the range the R channel spans
-uniform float uRingWidth;       // 1.0-1.5 m static ring (02b §8.5)
-uniform float uRunupReach;      // 8-15 m landward, before exposure scaling
-uniform float uRunupSpeed;      // 0.55-0.7
+uniform float uMaxShoreDist;    // metres the R channel spans; must exceed uFoamReach
+uniform float uFoamReach;       // metres offshore the surf zone extends
+uniform float uFoamCrest;       // -1..1 crest phase foam starts at
+uniform float uFoamCrestSoft;   // width of that threshold, kept narrow
+uniform float uFoamCrestNear;   // metres inside which foam rides the crests
+uniform float uFoamCrestFar;    // metres beyond which it settles to a steady band
+uniform float uFoamExposure;    // 0-1 fetch below which a coast simply does not foam
+uniform float uRunupSpeed;      // 0.55-0.7, now the wet-sand cycle
 uniform float uRunupFreq;       // 0.10-0.14 per metre, wet-sand cycle only
-uniform float uRunupCycles;     // swash fronts visible across the run-up band at once
 uniform float uFoamSteps;       // 3.0
 uniform float uFoamDetailLOD;   // 1 near, 0 at altitude — CPU-side, per 02b §2.4
 uniform vec3 cFoam;             // #ebedea
@@ -92,57 +101,41 @@ float quantizeFoam(float x, float steps) {
   return floor(s * steps) / steps;
 }
 
-/**
- * Asymmetric run-up phase — 02b §2.1.
- *
- * A sine is symmetric and reads mechanical; real swash surges fast and drains slowly. So the
- * phase is a sawtooth: fract() rises linearly and drops instantly, and feeding the RISING
- * part through a sharp curve and the falling part through a slack one gives a fast leading
- * edge with a long retreat. The doc traces the same conclusion through the Babylon.js beach
- * thread, where a symmetric version looked wrong for exactly this reason.
- *
- * @return 0..1 reach of the swash at this point on the shore right now
- */
-float runupBand(float shoreDist, float reach) {
-  // A gradient TOWARD shore: 1 at the waterline, 0 at the run-up limit. 02b §2.1's
-  // construction starts here — "a gradient towards shore", offset by time, repeated with
-  // frac, then thresholded.
-  float g = 1.0 - clamp(max(shoreDist, 0.0) / max(reach, 0.5), 0.0, 1.0);
-  if (g <= 0.0) return 0.0;
-
-  // Successive swash fronts travelling shoreward through that gradient.
-  //
-  // The first version multiplied the band's REACH by the phase, which reads plausibly and is
-  // wrong: whenever the phase was low the whole band collapsed to nothing, so the foam mask
-  // measured ~0 almost everywhere and the system rendered as if it were switched off. The
-  // phase decides where the leading edge IS; it must not decide whether the band exists.
-  float saw = fract(g * uRunupCycles - uWaveTime * uRunupSpeed);
-
-  // Asymmetric, per 02b §2.1: a swash surges fast and drains slowly, and a symmetric sine
-  // reads mechanical. Sharp leading edge, long trailing retreat.
-  //
-  // NOT multiplied by g. Fading the band's strength toward its limit is a soft gradient, which
-  // is the thing 02b §2.2 exists to forbid — and it interacts badly with the quantiser, which
-  // needs its input above ~0.4 to produce anything at all after the antialiasing smoothstep.
-  // With the fade in place the measured foam coverage was 0.1%: the band was being computed
-  // and then quantised straight back to nothing. g bounds where the swash reaches; the saw
-  // decides whether foam is there; neither dims it.
-  float lead = smoothstep(0.0, 0.10, saw);
-  float trail = 1.0 - smoothstep(0.45, 0.9, saw);
-  return min(lead, trail);
-}
-
-/** Retained for the wet-sand band, which wants the bare cycle rather than a spatial band. */
-float runupPhase(float shoreDist, float exposure) {
+/** The wet band breathes on the wave clock. A bare cycle, not a spatial swash front. */
+float wetPhase(float shoreDist) {
   return 0.5 + 0.5 * sin(uWaveTime * uRunupSpeed * 6.2831853 - shoreDist * uRunupFreq);
 }
 
 /**
- * @param worldXZ  surface position
- * @param fade     0..1 overall foam strength; 0 removes the system entirely
- * @return         rgb foam colour, a = coverage 0..1
+ * BREAKING CRESTS IN THE NEARSHORE — the foam model, rebuilt.
+ *
+ * This replaces a waterline ring plus an animated swash run-up. That construction drew foam
+ * as a property of the COASTLINE: a stroke that hugged the shore all the way round an island,
+ * present on every side of it at once, and animated by a phase of its own that had nothing to
+ * do with the waves running past. Which meant an island in a heavy swell wore the same collar
+ * on its sheltered back as on the face taking the sea.
+ *
+ * Foam is now a property of the WATER, and it needs three things to be true at once:
+ *
+ *   1. CLOSE TO SHORE. Within `uFoamReach` of the coastline — where a wave feels the bottom,
+ *      steepens and breaks. Out in open water it does not.
+ *   2. ON THE SIDE THE SWELL ARRIVES FROM. Gated on the fetch field (ShelterField), which is
+ *      already the answer to "how much open sea did the swell cross to get here". The lee of
+ *      an island scores near zero, so the calm side simply has no foam on it — the same field
+ *      that flattens the waves there takes their whitecaps with them.
+ *   3. AT THE TIP OF A WAVE, CLOSE UP. Gated on the crest phase near the camera, so foam sits
+ *      on the crests and moves with them; the gate opens with distance so far islands wear a
+ *      steady white edge instead of a field of flickering sub-pixel marks.
+ *
+ * The three multiply. A gate that added them would put foam on every crest in the ocean and on
+ * every metre of every coast, which is the failure the old model actually had.
+ *
+ * @param worldXZ    surface position
+ * @param crest01    -1..1 wave phase, 1 at the crest — `gerstnerCrest`
+ * @param exposure01 0..1 open-water fetch — `shelterExposure`
+ * @return           rgb foam colour, a = coverage 0..1
  */
-vec4 shoreFoam(vec2 worldXZ, float fade) {
+vec4 shoreFoam(vec2 worldXZ, float crest01, float exposure01, float viewDist) {
   ShoreSample s = sampleShore(worldXZ);
 
   if (uShoreDebug > 0.5) {
@@ -159,31 +152,59 @@ vec4 shoreFoam(vec2 worldXZ, float fade) {
     if (uShoreDebug < 3.5) return vec4(vec3(s.exposure), 1.0);
   }
 
-  if (!s.inAtlas || s.distance > uMaxShoreDist || fade <= 0.001 || uFoamEnable < 0.5) return vec4(0.0);
+  // Water only, and only inside the band. Land has no foam on it, and neither does open sea.
+  if (!s.inAtlas || s.distance < 0.0 || s.distance > uFoamReach) return vec4(0.0);
+  if (uFoamEnable < 0.5) return vec4(0.0);
 
-  // Layer 1: the static ring. Seaward side only — foam clings to the waterline, it does not
-  // sit on dry land. Always on, never animated, and cheap enough that 02b §7.3 keeps it alive
-  // even when every other shoreline layer has been budgeted away.
-  float ring = 1.0 - smoothstep(0.0, uRingWidth, max(s.distance, 0.0));
-  ring *= step(-0.6, s.distance);
+  // 1. Close to shore. Full strength at the waterline, gone by the reach — a wave breaks
+  //    harder the shallower it gets, so this is a ramp rather than a hard edge on the outer
+  //    limit. The edge that must stay hard is the crest gate below, not this one.
+  float near = 1.0 - smoothstep(uFoamReach * 0.35, uFoamReach, s.distance);
 
-  // Layer 2: the animated run-up. Reach scales with exposure, so an open headland is washed
-  // much further than a sheltered cove — 02b §2.1 and §8.5's "8-15 m landward, scaled by
-  // exposure channel A". The floor is 0.6 rather than 0.45: at 0.45 a sheltered stretch's band
-  // was thin enough to disappear into the ring, which is not what "scaled by exposure" means.
-  float reach = uRunupReach * mix(0.6, 1.0, s.exposure);
-  float band = runupBand(s.distance, reach);
+  // 2. On the side the swell arrives from. Below the threshold there is simply no foam: the
+  //    lee of an island is not lightly foamed, it is glassy.
+  float facing = smoothstep(uFoamExposure, uFoamExposure + 0.2, exposure01);
+
+  // 3. At the tip of the wave — BUT ONLY UP CLOSE.
+  //
+  // Two readings of the same shoreline, chosen by how far away it is.
+  //
+  // Near, the crest gate is on: foam sits on the tips of the waves and travels with them,
+  // which is what you see standing off a beach. Far, the gate opens to 1 and the same three
+  // other terms leave a steady band along the exposed shore — thicker, and not moving.
+  //
+  // That is not a compromise, it is the correct picture at each range, and it is 02b §2.4's
+  // argument arriving at a different answer than the doc's. At a kilometre a crest mark is
+  // sub-pixel: gating on it there does not draw small foam, it draws foam that flickers on and
+  // off as crests cross pixel centres, which reads as crawling noise. What an island's surf
+  // actually reads as from the air is a white edge on the windward side — steady, because you
+  // cannot resolve the individual waves making it. The doc solved the same aliasing by deleting
+  // the animated layer at altitude; this keeps the foam and stops it animating, which holds the
+  // island's silhouette instead of losing it.
+  float crestGate = smoothstep(uFoamCrest, uFoamCrest + uFoamCrestSoft, crest01);
+  float detail = 1.0 - smoothstep(uFoamCrestNear, uFoamCrestFar, viewDist);
+  float crest = mix(1.0, crestGate, detail);
+
   // Break up positional repetition, never soften the edge (02b §2.3): the noise moves WHERE
-  // the band sits, it does not blur it.
-  band *= 0.7 + 0.3 * fbm2(worldXZ * 0.09);
-  band *= step(-1.5, s.distance);
+  // foam sits along a crest, it does not blur it. Without this every crest foams along its
+  // whole length and the sea reads as corduroy.
+  //
+  // It MODULATES between 0.55 and 1 rather than running to zero. A term that reaches zero
+  // multiplies `raw` down through the quantiser's first step — which needs about 0.35 to
+  // produce any tone at all — so a break-up meant to thin the foam along a crest instead
+  // deleted it, and the gate measured 0% coverage on a system that was computing foam
+  // correctly and then rounding all of it away.
+  float broken = mix(0.55, 1.0, smoothstep(0.4, 0.7, fbm2(worldXZ * 0.035)));
 
-  // The run-up layer is the one that must go at altitude (02b §2.4): a metre-scale animated
-  // band under a 1500 m camera is sub-pixel and will alias into crawling noise. The static
-  // ring survives as a flat coastline stroke.
-  float runup = band * uFoamDetailLOD;
-
-  float raw = max(ring, runup);
+  // The whole thing is animated, so it is all subject to 02b §2.4's altitude LOD — a
+  // metre-scale foam mark under a 1500 m camera is sub-pixel and aliases into crawling noise.
+  // The old model kept a static ring alive down there; this one has nothing static to keep,
+  // so at altitude the foam goes and the coastline is drawn by the shelf colour alone.
+  // NOT multiplied by uFoamDetailLOD any more. That uniform faded the whole system out with
+  // altitude, which is why distant islands carried no surf at all; the crest blend above now
+  // does the anti-aliasing job it was there for, by making distant foam steady rather than by
+  // deleting it.
+  float raw = near * facing * crest * broken;
   float tone = quantizeFoam(raw, uFoamSteps);
 
   // Debug 4: the tone alone, so a missing band can be told apart from a band that is present
@@ -203,7 +224,7 @@ vec4 shoreFoam(vec2 worldXZ, float fade) {
   if (uFoamSmoothSabotage > 0.5) {
     float soft = smoothstep(0.0, 1.0, raw);
     if (soft <= 0.0) return vec4(0.0);
-    return vec4(mix(cFoamShadow, cFoam, soft), soft * fade);
+    return vec4(mix(cFoamShadow, cFoam, soft), soft);
   }
 
   // COVERAGE IS BINARY; THE QUANTISED VALUE PICKS A TONE.
@@ -216,7 +237,7 @@ vec4 shoreFoam(vec2 worldXZ, float fade) {
   // three quantised levels choose among three opaque foam tones instead.
   if (tone <= 0.0) return vec4(0.0);
   vec3 color = tone > 0.66 ? cFoam : (tone > 0.33 ? mix(cFoamShadow, cFoam, 0.55) : cFoamShadow);
-  return vec4(color, fade);
+  return vec4(color, 1.0);
 }
 
 /**
@@ -232,7 +253,7 @@ vec3 applyWetSand(vec3 albedo, vec2 worldXZ, vec3 wetTint, float bandWidth) {
   if (!s.inAtlas || s.distance > 0.0) return albedo;
 
   float landward = -s.distance;                 // metres inland from the waterline
-  float phase = runupPhase(s.distance, s.exposure);
+  float phase = wetPhase(s.distance);
   float reach = bandWidth * mix(0.5, 1.0, s.exposure) * (0.55 + 0.45 * phase);
   float wet = 1.0 - smoothstep(0.0, reach, landward);
   // Quantised like the foam, for the same reason: a smooth damp gradient is a soft edge.

@@ -262,7 +262,11 @@ export class ShadowProbe {
     const start = cascades.centreOf(0).clone();
     // A fifth of a texel per step: four of them cover less than one lattice cell, so at most
     // one crossing is possible however the cell boundaries happen to fall.
-    const step = cascades.texelSizeOf(0) * 0.2;
+    // A TENTH of a texel per step, so four cumulative nudges travel 0.4 of one cell and can
+    // cross at most a single boundary however the lattice happens to be aligned. At a fifth
+    // they travelled 0.8 of a cell, two crossings were possible, and the test failed its own
+    // "three of four" on a snap that was working perfectly.
+    const step = cascades.texelSizeOf(0) * 0.1;
 
     // Compared PERPENDICULAR to the sun, because that is the only direction in which moving
     // the shadow camera moves the shadow. Sliding it along the light axis just shifts the

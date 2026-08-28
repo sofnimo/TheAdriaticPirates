@@ -118,8 +118,11 @@ function skimView(state: SeaStateName, awayFrom: THREE.Vector3): ViewSpec {
 }
 
 /** The seaward shore texel with the highest exposure — where foam should be most visible. */
-function mostExposedShore(field: { resolution: number; land: Uint8Array; originX: number; originZ: number; metresPerSample: number; exposure: Float32Array },
-                          atlas: ShoreAtlas): { x: number; z: number } {
+function mostExposedShore(
+  field: { resolution: number; land: Uint8Array; originX: number; originZ: number; metresPerSample: number },
+  atlas: ShoreAtlas,
+  shelter: ShelterField,
+): { x: number; z: number } {
   let best = -Infinity;
   let bx = 0;
   let bz = 0;
@@ -131,15 +134,16 @@ function mostExposedShore(field: { resolution: number; land: Uint8Array; originX
       const z = field.originZ + iz * field.metresPerSample;
       const d = atlas.distanceAt(x, z);
       if (d < 2 || d > 12) continue;
-      // Scored on the ATLAS's headland-versus-cove channel, because that is the number the
-      // run-up reach is actually scaled by. The island field's own exposure says which flank
-      // faces the open sea and saturates at 1 across the whole of it, so ranking by it left
-      // thousands of ties for the `z` term to break — and picked whatever lay furthest north,
-      // which on a generated island is as likely to be a tapering terminus as a headland.
+      // Scored on the FETCH first, because that is now what decides whether a coast foams at
+      // all. Foam needs the swell to actually arrive, and the lee of an island is deliberately
+      // bare — so a probe that framed the most headland-like stretch without asking which way
+      // the sea was running would as often as not point at glassy water and report 0% coverage
+      // on a working system. The atlas's headland-versus-cove channel breaks the remaining
+      // ties, since among stretches the swell reaches, a headland takes it hardest.
       const scale = atlas.resolution / field.resolution;
       const ax = Math.min(atlas.resolution - 1, Math.round(ix * scale));
       const az = Math.min(atlas.resolution - 1, Math.round(iz * scale));
-      const score = atlas.exposure[az * atlas.resolution + ax]! + field.exposure[i]! * 0.25;
+      const score = shelter.exposureAt(x, z) * 2 + atlas.exposure[az * atlas.resolution + ax]!;
       if (score > best) { best = score; bx = x; bz = z; }
     }
   }
@@ -313,6 +317,8 @@ export class OceanTestScene {
   /** The sea surface the hull floats on. The same four waves the ocean shader draws. */
   readonly waveSurface: WaveSurface;
   /** Fetch field: where the islands are blocking the swell. See ShelterField. */
+  /** What the `shore` view looks at. The shore gate re-frames along this axis. */
+  readonly shoreTarget = new THREE.Vector3();
   readonly shelter: ShelterField;
   readonly seaplane: Seaplane;
   readonly devOverlay = new THREE.Scene();
@@ -374,11 +380,26 @@ export class OceanTestScene {
     });
     // 02b §7.1: the shoreline is a post-process stage of the island pipeline. It bakes from
     // the land mask and the bathymetry's depth, so both must already exist.
-    this.shoreAtlas = new ShoreAtlas(this.archipelago.field, this.depthField);
+    this.shoreAtlas = new ShoreAtlas(this.archipelago.field, this.depthField, {
+      // Wide enough to carry the foam band. The R channel is 8-bit over plus/minus this, so
+      // 120 m spans the 100 m surf zone at just under a metre per step — ample for a mask
+      // whose own edge is quantised to three tones anyway.
+      maxShoreDistance: 120,
+    });
     this.shoreUniforms = makeShoreUniforms(this.shoreAtlas);
     this.archipelago.attachShore(this.shoreUniforms);
 
     this.ocean = new Ocean(this.scene, this.depthField, seaState, this.shoreUniforms);
+
+    // --- shelter ---------------------------------------------------------------------------
+    // Baked from the land mask and the swell's bearing, then read by three systems: the ocean
+    // material scales its waves by it, the foam only appears where it is high, and the hull
+    // floats on it. Built here rather than inside `Ocean` because it needs the islands, which
+    // the ocean knows nothing about — and built BEFORE the view framing below, which now picks
+    // its shore by asking this field which coast the swell is actually reaching.
+    this.shelter = new ShelterField(this.archipelago.field);
+    this.ocean.attachShelter(this.shelter);
+    this.rebakeShelter();
 
     // Frame the aerial views from the hero island's actual bounds rather than hardcoded
     // numbers, so re-authoring the spine cannot silently leave the camera pointing at sea.
@@ -411,7 +432,7 @@ export class OceanTestScene {
 
     // Put the camera on the most exposed stretch of the seaward coast, so the run-up band is
     // at its widest and the foam is being judged where it does the most work.
-    const shorePoint = mostExposedShore(this.archipelago.field, this.shoreAtlas);
+    const shorePoint = mostExposedShore(this.archipelago.field, this.shoreAtlas, this.shelter);
     // 02b §2.4 splits foam behaviour into three altitude regimes and says individual clumps
     // are only legible as shapes in the "<150 m" one. At 70 m up and 200 m out the run-up band
     // was 3-5 px tall — present and correct, and impossible to judge. This sits in the regime
@@ -427,6 +448,9 @@ export class OceanTestScene {
         shorePoint.x - seaward.x * 14, 1, shorePoint.z - seaward.z * 14,
       ),
     };
+    // Kept so the shore gate can back the camera off along the same axis without re-deriving
+    // the framing and drifting onto a different stretch of coast than the view was chosen for.
+    this.shoreTarget.copy(VIEWS.shore.target);
 
     // Re-aim the two water views on the shelf the island actually generated, rather than on a
     // fixed offset from its bounding box. Both frame the same transition — `cove` obliquely,
@@ -448,17 +472,8 @@ export class OceanTestScene {
     // The hull floats on the SAME four waves the ocean shader draws — one wave stack, two
     // readers, for the same reason the land mask and the bathymetry share one array.
     this.waveSurface = new WaveSurface(seaState);
-
-    // --- shelter ---------------------------------------------------------------------------
-    // Baked from the land mask and the swell's bearing, then handed to all three readers: the
-    // ocean material scales its waves by it, the glints thin over it, and the hull floats on
-    // it. Built here rather than inside `Ocean` because it needs the islands, which the ocean
-    // knows nothing about.
-    this.shelter = new ShelterField(this.archipelago.field);
-    this.ocean.attachShelter(this.shelter);
     this.waveSurface.shelter = this.shelter;
     this.waveSurface.shelterMin = this.ocean.uniforms.uShelterMin!.value as number;
-    this.rebakeShelter();
 
     const mooring = findMooring(this.archipelago.field, this.shoreAtlas);
     // Nose down the lane, along strike: that is where the open water is, and a seaplane

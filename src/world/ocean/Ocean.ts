@@ -215,6 +215,13 @@ export class Ocean {
     return SEA_STATES[this.seaState].waves[0].directionDeg + this.headingOffset;
   }
 
+  /** Seconds for one full cycle of the dominant swell. What foam on the crests moves on. */
+  get dominantWavePeriod(): number {
+    const w = SEA_STATES[this.seaState].waves[0];
+    const k = (Math.PI * 2) / w.wavelength;
+    return (Math.PI * 2) / Math.sqrt(9.8 * k);
+  }
+
   /** Degrees the stack is rotated off the authored bearing. The hull needs the same number. */
   get headingOffsetDeg(): number {
     return this.headingOffset;

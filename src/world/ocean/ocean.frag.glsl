@@ -81,7 +81,15 @@ void main() {
   // foam is a surface on the water, so it takes the atmosphere the water takes, but it is not
   // itself lit by the depth ramp — it is white pigment, not sea. 02b §7.1 attaches the shoreline
   // system at exactly this point in the water shader.
-  vec4 foam = shoreFoam(vWorldPos.xz, 1.0);
+  // Foam needs the wave phase and the fetch, and both live in gerstner.glsl — so they are
+  // read here and passed in, rather than shore.glsl reaching for them. The land materials
+  // include shore.glsl too (for its shore distance) and have no wave stack at all.
+  vec4 foam = shoreFoam(
+    vWorldPos.xz,
+    gerstnerCrest(vWorldPos.xz),
+    shelterExposure(vWorldPos.xz),
+    length(cameraPosition - vWorldPos)
+  );
   color = mix(color, foam.rgb, foam.a);
 
   // ---- NO SKY REFLECTION ------------------------------------------------------
