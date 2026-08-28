@@ -34,8 +34,6 @@ const MAX_EDGE_PX = 3;
 const MIN_SHADOWED_FRACTION = 0.01;
 /** Two colours closer than this in direction are the same hue — i.e. a multiply. */
 const MIN_HUE_DEGREES = 1.5;
-/** Fraction allowed to change under a sub-texel camera nudge (§3.2 shimmer). */
-const MAX_CRAWL_FRACTION = 0.03;
 
 export interface ShadowReport {
   shadowedFraction: number;
@@ -52,7 +50,9 @@ export interface ShadowReport {
   hueDegrees: number;
   hueShifted: boolean;
 
-  crawlFraction: number;
+  /** Of four sub-texel camera nudges, how many left the near cascade exactly put. */
+  snapHeld: number;
+  snapHeldUnsnapped: number;
   stable: boolean;
 
   cascades: number;
@@ -133,19 +133,22 @@ export class ShadowProbe {
     // 5 cm camera move changes which wave face each pixel lands on, and the resulting churn
     // swamps the thing being measured — it read 11% on a shadow that was not crawling at all.
     // The profile view is nearly all terrain, which does not move at all between two frames.
+    // MEASURED ON THE FIT, NOT ON PIXELS — because pixels cannot answer this question.
+    //
+    // Two earlier versions diffed frames before and after a small camera move and counted how
+    // many pixels inside the shadow changed. Both were measuring the wrong thing. Moving the
+    // camera at all resamples the entire frame, so every pixel near any colour boundary
+    // changes whether or not the shadow crawled; with the snap deliberately DISABLED the
+    // figure came back 3.67%, identical to four figures with it enabled. A metric that reads
+    // the same with the mechanism on and off is not measuring the mechanism.
+    //
+    // What §3.2 actually asks for is precise and has nothing to do with pixels: the shadow
+    // camera's centre is quantised to its own texel lattice, so a camera move smaller than a
+    // texel must leave it EXACTLY where it was. That is checkable directly, deterministically,
+    // and without rendering a frame.
     this.test.setView('profile');
-    const camera = this.test.camera;
-    const home = camera.position.clone();
-    const landLit = this.capture(false);
-    const landShadowed = this.capture(true);
-    const landMask = differenceMask(landLit, landShadowed);
-
-    camera.position.x += 0.05;
-    camera.updateMatrixWorld(true);
-    const nudged = this.capture(true);
-    camera.position.copy(home);
-    camera.updateMatrixWorld(true);
-    const crawl = maskedDifference(landShadowed, nudged, landMask);
+    const held = this.measureSnap(true);
+    const heldUnsnapped = this.measureSnap(false);
 
     this.test.sun.apply(wasPreset);
     this.test.sun.shadows.setEnabled(wasEnabled);
@@ -170,7 +173,8 @@ export class ShadowProbe {
     // difference can be flipped on and looked at directly.
     const rigid = Number.isFinite(swim);
     const hueShifted = hue >= MIN_HUE_DEGREES;
-    const stable = crawl <= MAX_CRAWL_FRACTION;
+    // Three of four, and the control must fail where the mechanism succeeds.
+    const stable = held >= 3 && heldUnsnapped === 0;
 
     return {
       shadowedFraction: round4(shadowedFraction),
@@ -183,7 +187,8 @@ export class ShadowProbe {
       rigid,
       hueDegrees: round2(hue),
       hueShifted,
-      crawlFraction: round4(crawl),
+      snapHeld: held,
+      snapHeldUnsnapped: heldUnsnapped,
       stable,
       cascades: this.test.sun.shadows.count,
       pass: present && hardEdged && rigid && hueShifted && stable,
@@ -237,6 +242,53 @@ export class ShadowProbe {
     camera.updateMatrixWorld(true);
   }
 
+  /**
+   * How often the near cascade's centre holds completely still under a sub-texel camera move.
+   *
+   * Four nudges, each a fraction of one texel. With the snap on, the centre is pinned to the
+   * lattice, so it cannot move at all except on the one step that happens to cross a lattice
+   * line — hence "at least three of four", not "all four". With the snap off it tracks the
+   * camera continuously and holds still on none of them.
+   */
+  private measureSnap(snap: boolean): number {
+    const cascades = this.test.sun.shadows;
+    const camera = this.test.camera;
+    const home = camera.position.clone();
+    const wasSnapping = cascades.snapToTexels;
+    cascades.snapToTexels = snap;
+
+    const sun = globalUniforms.uSunDirection.value;
+    cascades.update(camera, sun);
+    const start = cascades.centreOf(0).clone();
+    // A fifth of a texel per step: four of them cover less than one lattice cell, so at most
+    // one crossing is possible however the cell boundaries happen to fall.
+    const step = cascades.texelSizeOf(0) * 0.2;
+
+    // Compared PERPENDICULAR to the sun, because that is the only direction in which moving
+    // the shadow camera moves the shadow. Sliding it along the light axis just shifts the
+    // near and far planes of an orthographic projection and leaves every texel exactly where
+    // it was, so the lateral lattice is snapped and the axial position deliberately is not —
+    // quantising that too would make the depth range jitter for no gain.
+    const lateral = (v: THREE.Vector3): THREE.Vector3 =>
+      v.clone().addScaledVector(sun, -v.dot(sun));
+    const startLateral = lateral(start);
+
+    let held = 0;
+    for (let i = 1; i <= 4; i++) {
+      camera.position.copy(home);
+      camera.position.x += step * i;
+      camera.updateMatrixWorld(true);
+      cascades.update(camera, sun);
+      if (lateral(cascades.centreOf(0)).distanceTo(startLateral) < 1e-6) held++;
+    }
+
+    camera.position.copy(home);
+    camera.updateMatrixWorld(true);
+    cascades.snapToTexels = wasSnapping;
+    cascades.update(camera, sun);
+    return held;
+  }
+
   /** Pixels the shadow silhouette's centre of area drifts over half a wave period. */
   private measureSwim(waveTime: number): number {
     this.test.setWaveTime(waveTime);
@@ -284,8 +336,10 @@ export class ShadowProbe {
     l.push('        vs ' + r.swimSabotagedPx.toFixed(2) + ' px sampling the DISPLACED surface — the ' +
       'control does not separate, so this is reported, not gated');
     l.push('        (held structurally: ocean.frag.glsl samples vBasePos, which carries no displacement)');
-    l.push(row(r.stable, 'no crawl on camera motion: ' + (r.crawlFraction * 100).toFixed(2) +
-      '% move under a sub-texel nudge (max ' + (MAX_CRAWL_FRACTION * 100) + '% — §3.2 texel snap)'));
+    l.push(row(r.stable, 'texel snap (§3.2): the near cascade held still for ' + r.snapHeld +
+      ' of 4 sub-texel camera nudges (min 3)'));
+    l.push('        negative control, snap disabled: held ' + r.snapHeldUnsnapped +
+      ' of 4 (must be 0, or the snap is not what is holding it)');
     return l.join('\n');
   }
 }
@@ -347,23 +401,6 @@ function centroid(m: Mask, width: number): { x: number; y: number } | null {
     sy += (i / width) | 0;
   }
   return { x: sx / m.count, y: sy / m.count };
-}
-
-/** How many of the mask's pixels differ between two frames. */
-function maskedDifference(a: Frame, b: Frame, mask: Mask): number {
-  if (mask.count === 0) return 1;
-  let moved = 0;
-  for (let i = 0; i < mask.flags.length; i++) {
-    if (mask.flags[i] !== 1) continue;
-    const o = i * 4;
-    const d = Math.max(
-      Math.abs(a.data[o]! - b.data[o]!),
-      Math.abs(a.data[o + 1]! - b.data[o + 1]!),
-      Math.abs(a.data[o + 2]! - b.data[o + 2]!),
-    );
-    if (d > 6) moved++;
-  }
-  return moved / mask.count;
 }
 
 /**

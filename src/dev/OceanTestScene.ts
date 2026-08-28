@@ -321,7 +321,28 @@ export class OceanTestScene {
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.5, 25000);
 
     this.sky = new SkyDome(this.scene, 10000);
-    this.sun = new SunRig(this.scene, { cascades: { maxDistance: 2500 } });
+    // SHADOWS ACROSS THE WHOLE TILE, not just the near field.
+    //
+    // The tile is 8192 m square, so from anywhere sensible in it the far corner is a few
+    // kilometres off. At the previous 2500 m the sun simply stopped working partway out:
+    // near islands cast, far ones did not, and the boundary sat in open view.
+    //
+    // 04 §8.2 gives 3 cascades and adds "4 if draw distance grows past ~6 km", which is
+    // exactly what this is, so the fourth is the doc's own answer rather than a knob being
+    // turned. The trade it asks for is real and worth stating: the outermost cascade covers
+    // kilometres on one 1024 map, so distant shadows are blobs rather than shapes. At that
+    // range an island's shadow is a few pixels of dark on the sea, which is the read it needs
+    // — and the alternative on offer was no shadow there at all.
+    // The split scheme has to move with the range, and this is the part that is easy to miss.
+    // Reaching further at the default lambda of 0.55 stretches EVERY slice, including the
+    // first — the near cascade's texel went from 0.85 m to 1.88 m, so paying for distant
+    // shadows would have quietly coarsened the ones under the aircraft. Weighting the split
+    // logarithmic instead packs the near slices tight and lets the outermost absorb the rest:
+    // texels run about 0.64 m, 1.4 m, 3.1 m, 17 m across the four. The near field ends up
+    // FINER than it was before the range was extended.
+    this.sun = new SunRig(this.scene, {
+      cascades: { cascades: 4, maxDistance: 9000, lambda: 0.85 },
+    });
 
     // Order matters: the archipelago bakes its field first, then the bathymetry is built
     // FROM that mask. One shoreline, two consumers (02b §1.2).

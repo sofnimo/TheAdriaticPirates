@@ -48,6 +48,16 @@ export class ShadowCascades {
   readonly mapSize: number;
   readonly maxDistance: number;
 
+  /**
+   * §3.2's texel snap. Public so the shadow gate can turn it off as a negative control.
+   *
+   * There is no reason to ship it off. It exists so the gate can measure the snap doing its
+   * job rather than assert an absolute crawl percentage — a fixed threshold is a statement
+   * about cascade sizes, so it silently stops meaning anything the moment the split scheme or
+   * the cascade count changes, which is exactly what happened when the range was extended.
+   */
+  snapToTexels = true;
+
   private readonly lambda: number;
   private readonly targets: THREE.Object3D[] = [];
   /** World metres covered by one shadow texel, per cascade. Drives the normal bias. */
@@ -107,6 +117,22 @@ export class ShadowCascades {
       // its depth map was rendered with, with no ordering rule for anyone to get wrong.
       u['uCsmMatrix' + i]!.value = this.lights[Math.min(i, this.count - 1)]!.shadow.matrix;
     }
+  }
+
+  /**
+   * Where a cascade's shadow camera is currently centred, in world space.
+   *
+   * Exposed for the gate. With `snapToTexels` on, this value is quantised to the cascade's own
+   * texel lattice, so moving the camera a little must leave it EXACTLY where it was — which is
+   * both what §3.2 asks for and something a test can check without rendering anything.
+   */
+  centreOf(index: number): THREE.Vector3 {
+    return this.targets[Math.min(index, this.count - 1)]!.position;
+  }
+
+  /** World metres one shadow texel covers, per cascade. The lattice `centreOf` snaps to. */
+  texelSizeOf(index: number): number {
+    return this.texelWorld[Math.min(index, this.count - 1)] ?? 1;
   }
 
   /** 04 §1's overcast preset turns cast shadow off entirely; so does the debug UI. */
@@ -208,17 +234,32 @@ export class ShadowCascades {
     const texelWorld = (radius * 2) / this.mapSize;
     this.texelWorld[index] = texelWorld;
 
-    // §3.2's texel snap. Done in the LIGHT's frame, because that is the grid the depth map is
-    // rasterised on; snapping in world space would leave a sub-texel drift along whichever
-    // axis the sun happens to lie.
-    const eye = _eye.copy(centre).addScaledVector(sunDir, radius + LIGHT_MARGIN);
-    const up = Math.abs(sunDir.y) > 0.99 ? _upAlt : _up;
-    _lightView.lookAt(eye, centre, up).setPosition(eye).invert();
-    const local = _local.copy(centre).applyMatrix4(_lightView);
-    local.x = Math.round(local.x / texelWorld) * texelWorld;
-    local.y = Math.round(local.y / texelWorld) * texelWorld;
-    _lightWorld.copy(_lightView).invert();
-    const snapped = local.applyMatrix4(_lightWorld);
+    // §3.2's texel snap, in a light frame anchored to the WORLD rather than to the camera.
+    //
+    // This is the part that is easy to get subtly wrong, and the first version here was: it
+    // built the light's view matrix from an eye position derived from `centre`, then expressed
+    // `centre` in that matrix and rounded. But a frame whose origin follows the centre puts the
+    // centre at a fixed point in its own coordinates — near enough (0, 0, -d) every frame — so
+    // rounding it changed nothing at all. The snap was a no-op, and the shadow map slid
+    // continuously under the world exactly as if it had never been written.
+    //
+    // The lattice has to be a property of the SUN, not of the camera. So the basis below comes
+    // only from the sun direction, and the centre is projected onto it in absolute world terms.
+    // Rounding those projections pins the centre to a grid that stays put while the camera
+    // moves through it, which is the whole point.
+    const upRef = Math.abs(sunDir.y) > 0.99 ? _upAlt : _up;
+    const right = _right.crossVectors(upRef, sunDir).normalize();
+    const upAxis = _upAxis.crossVectors(sunDir, right).normalize();
+
+    const snapped = _snapped.copy(centre);
+    if (this.snapToTexels) {
+      const lx = Math.round(centre.dot(right) / texelWorld) * texelWorld;
+      const ly = Math.round(centre.dot(upAxis) / texelWorld) * texelWorld;
+      const lz = centre.dot(sunDir);
+      snapped.copy(right).multiplyScalar(lx)
+        .addScaledVector(upAxis, ly)
+        .addScaledVector(sunDir, lz);
+    }
 
     target.position.copy(snapped);
     target.updateMatrixWorld();
@@ -250,9 +291,8 @@ export class ShadowCascades {
 
 const _forward = new THREE.Vector3();
 const _centre = new THREE.Vector3();
-const _eye = new THREE.Vector3();
-const _local = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _upAxis = new THREE.Vector3();
+const _snapped = new THREE.Vector3();
 const _up = new THREE.Vector3(0, 1, 0);
 const _upAlt = new THREE.Vector3(0, 0, 1);
-const _lightView = new THREE.Matrix4();
-const _lightWorld = new THREE.Matrix4();
