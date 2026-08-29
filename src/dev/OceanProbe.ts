@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { globalUniforms } from '../render/shading/ShadingUniforms';
 import { OCEAN } from '../art/budgets';
-import { GLINT_SHAPE } from '../art/seaRamp';
+import { GLINT_SHAPE, GLINT_SOLO } from '../art/seaRamp';
 import type { OceanTestScene } from './OceanTestScene';
 
 /**
@@ -90,8 +90,8 @@ export interface ShelfResult {
 export interface GlintResult {
   coveragePct: number;
   inTargetRange: boolean;
-  runAlongSwellPx: number;
-  runAcrossSwellPx: number;
+  runAlongCrestPx: number;
+  runAcrossCrestPx: number;
   elongationRatio: number;
   elongated: boolean;
   modalSeaColor: RGB;
@@ -102,16 +102,25 @@ export interface AltitudeResult {
   /** Coverage on the near-water skim view — the framing image-4.jpg's figure came from. */
   coverageNearPct: number;
   coverageAt1500mPct: number;
-  fadesWithAltitude: boolean;
+  /** Glints must SURVIVE the climb now — see probeAltitude for why this flipped. */
+  survivesAltitude: boolean;
   changedPixelsPct: number;
+  changedAtAltitudePct: number;
   stable: boolean;
   pass: boolean;
+}
+
+export interface ModeResult {
+  label: string;
+  coveragePct: number;
 }
 
 export interface OceanReport {
   shelf: ShelfResult;
   glints: GlintResult;
   altitude: AltitudeResult;
+  modes: ModeResult[];
+  everyModeDraws: boolean;
   triangles: number;
   drawCalls: number;
   withinTriangleBudget: boolean;
@@ -178,6 +187,8 @@ export class OceanProbe {
     const glints = this.probeGlints(glintFrame);
 
     const altitude = this.probeAltitude();
+    const modes = this.probeModes();
+    const everyModeDraws = modes.every((m) => m.coveragePct > 0);
 
     globalUniforms.uHazeStrength.value = hazeStrength;
 
@@ -193,12 +204,14 @@ export class OceanProbe {
       shelf,
       glints,
       altitude,
+      modes,
+      everyModeDraws,
       triangles,
       drawCalls,
       withinTriangleBudget: this.test.ocean.withinTriangleBudget,
       withinDrawCallBudget: drawCalls <= OCEAN.maxDrawCalls,
       pass:
-        shelf.pass && glints.pass && altitude.pass &&
+        shelf.pass && glints.pass && altitude.pass && everyModeDraws &&
         this.test.ocean.withinTriangleBudget && drawCalls <= OCEAN.maxDrawCalls,
     };
   }
@@ -308,8 +321,10 @@ export class OceanProbe {
     for (let i = 0; i < mask.length; i++) count += mask[i]!;
     const coveragePct = (count / total) * 100;
 
-    // Screen-space swell axis, from two world points along the swell direction.
-    const axis = this.swellScreenAxis(frame);
+    // Screen-space CREST axis. Marks lie along the crests, which run at right angles to the
+    // swell's direction of travel — measuring against the travel vector instead returns the
+    // reciprocal of the aspect and reads as a gate failure on a correct field.
+    const axis = this.crestScreenAxis(frame);
     const perp = { x: -axis.y, y: axis.x };
 
     const runAlong = meanRunLength(mask, region.w, region.h, axis);
@@ -330,8 +345,8 @@ export class OceanProbe {
     return {
       coveragePct: round1(coveragePct),
       inTargetRange,
-      runAlongSwellPx: round1(runAlong),
-      runAcrossSwellPx: round1(runAcross),
+      runAlongCrestPx: round1(runAlong),
+      runAcrossCrestPx: round1(runAcross),
       elongationRatio: round1(ratio),
       elongated,
       modalSeaColor: modal,
@@ -339,13 +354,21 @@ export class OceanProbe {
     };
   }
 
-  private swellScreenAxis(frame: Framebuffer): { x: number; y: number } {
+  /**
+   * The wave CREST line in screen space — the axis the marks are painted along.
+   *
+   * Derived from `uSwellDir` by the same 90-degree turn glints.glsl makes, so the measurement
+   * and the shader cannot disagree about which way a crest runs, and both follow the swell
+   * heading slider without anything else needing to be told.
+   */
+  private crestScreenAxis(frame: Framebuffer): { x: number; y: number } {
     const swell = this.test.ocean.uniforms.uSwellDir!.value as THREE.Vector2;
+    const crest = new THREE.Vector2(-swell.y, swell.x);
     const camera = this.test.camera;
     const centre = new THREE.Vector3(camera.position.x, 0, camera.position.z);
     const a = projectPoint(centre, camera, frame.width, frame.height);
     const b = projectPoint(
-      new THREE.Vector3(centre.x + swell.x * 40, 0, centre.z + swell.y * 40),
+      new THREE.Vector3(centre.x + crest.x * 40, 0, centre.z + crest.y * 40),
       camera,
       frame.width,
       frame.height,
@@ -354,6 +377,47 @@ export class OceanProbe {
     const dy = b.y - a.y;
     const len = Math.hypot(dx, dy);
     return len > 1e-3 ? { x: dx / len, y: dy / len } : { x: 1, y: 0 };
+  }
+
+  // ---------------------------------------------------------------- behaviours
+
+  /**
+   * Does each of the three glint behaviours actually put marks on the water?
+   *
+   * THE THREE ARE NORMALLY SUMMED, which is exactly why this has to take them apart. On the
+   * live sea all three draw at once over the whole surface, so one of them failing silently
+   * does not empty the frame — it just makes it slightly thinner, which no coverage figure
+   * measured on the sum would ever catch. Each has a plausible way to render nothing: the sun
+   * path can point out of frame, the patch gate can close, and the wave tips multiply a crest
+   * term by a facing floor of 0.12 and could land under a pixel. `uGlintSolo` isolates them
+   * one at a time so the gate can see each contribute on its own.
+   *
+   * Coverage is not compared BETWEEN behaviours; they legitimately differ by a lot, the sun
+   * path most of all, since its wedge only covers part of the frame. All this asks is that
+   * none of the three is silently empty.
+   */
+  private probeModes(): ModeResult[] {
+    const uniform = this.test.ocean.uniforms.uGlintSolo!;
+    const was = uniform.value as number;
+    const solos = [
+      { label: 'patches', value: GLINT_SOLO.patches },
+      { label: 'sun path', value: GLINT_SOLO.sunPath },
+      { label: 'wave tips', value: GLINT_SOLO.waveTips },
+    ];
+    const out: ModeResult[] = [];
+
+    this.test.setView('skim');
+    for (const solo of solos) {
+      uniform.value = solo.value;
+      const frame = this.renderAndRead();
+      const region = nearWaterRegion(frame);
+      const modal = modalColor(frame, region);
+      const coverage = coverageOf(buildGlintMask(frame, region, modal), region);
+      out.push({ label: solo.label, coveragePct: round1(coverage) });
+    }
+
+    uniform.value = was;
+    return out;
   }
 
   // ---------------------------------------------------------------- altitude / stability
@@ -386,16 +450,38 @@ export class OceanProbe {
     this.test.setWaveTime(t0);
     const changed = changedFraction(stableFrameA, stableFrameB, nearWaterRegion(stableFrameA));
 
-    const fades = highCoverage < lowCoverage * 0.35;
-    const stable = changed < 8;
+    // STABILITY AT ALTITUDE, measured separately, and it is the one that matters now.
+    //
+    // The old field had a sub-pixel guard that dropped any mark whose cell covered less than
+    // about a pixel, and a density taper that emptied the sea past 150 m. Both are gone: the
+    // brief is that glints read at every distance. What replaced them is a lattice that grows
+    // with view distance so a mark holds its apparent size — and if that arithmetic is wrong,
+    // the failure is not a missing mark, it is a boiling one. Measuring stability only on the
+    // skim view would have missed it entirely, because near water is exactly where the field
+    // was always stable.
+    this.test.setView('high');
+    const highA = this.renderAndRead();
+    this.test.setWaveTime(t0 + 1 / 60);
+    const highB = this.renderAndRead();
+    this.test.setWaveTime(t0);
+    const changedHigh = changedFraction(highA, highB, centreRegion(highA));
+
+    // Flipped from "fades with altitude". The reference frame this field is built from carries
+    // discrete marks from the bottom of the frame to the horizon, and the brief asks for the
+    // same. What is gated is that the far field keeps a real share of the near field's
+    // density — not that it matches it, since the sun-facing and crest gates legitimately
+    // thin it where the water tilts away.
+    const survives = highCoverage > lowCoverage * 0.3;
+    const stable = changed < 8 && changedHigh < 8;
 
     return {
       coverageNearPct: round1(lowCoverage),
       coverageAt1500mPct: round1(highCoverage),
-      fadesWithAltitude: fades,
+      survivesAltitude: survives,
       changedPixelsPct: round1(changed),
+      changedAtAltitudePct: round1(changedHigh),
       stable,
-      pass: fades && stable,
+      pass: survives && stable,
     };
   }
 
@@ -431,18 +517,26 @@ export class OceanProbe {
     lines.push(
       '  ' + (r.glints.pass ? 'ok  ' : 'FAIL') +
         ' coverage ' + r.glints.coveragePct + '% (frames: 1.5% mid-altitude to 16.1% image-4)' +
-        '  run along swell ' + r.glints.runAlongSwellPx + 'px' +
-        '  across ' + r.glints.runAcrossSwellPx + 'px' +
+        '  run along crest ' + r.glints.runAlongCrestPx + 'px' +
+        '  across ' + r.glints.runAcrossCrestPx + 'px' +
         '  ratio ' + r.glints.elongationRatio + ':1',
     );
     lines.push('        modal sea colour ' + rgbHex(r.glints.modalSeaColor));
+    lines.push('');
+    lines.push('behaviours (each must draw something on the skim view):');
+    lines.push(
+      '  ' + (r.everyModeDraws ? 'ok  ' : 'FAIL') + ' ' +
+        r.modes.map((m) => m.label + ' ' + m.coveragePct + '%').join('   '),
+    );
     lines.push('');
     lines.push('altitude + stability:');
     lines.push(
       '  ' + (r.altitude.pass ? 'ok  ' : 'FAIL') +
         ' coverage near ' + r.altitude.coverageNearPct + '%' +
         ' -> 1500m ' + r.altitude.coverageAt1500mPct + '%' +
-        '  pixels changed over one 60Hz step: ' + r.altitude.changedPixelsPct + '%',
+        (r.altitude.survivesAltitude ? '' : '  (must hold >= 30% of near)') +
+        '  pixels changed over one 60Hz step: ' + r.altitude.changedPixelsPct + '% near, ' +
+        r.altitude.changedAtAltitudePct + '% at altitude (limit 8)',
     );
     lines.push('');
     lines.push(

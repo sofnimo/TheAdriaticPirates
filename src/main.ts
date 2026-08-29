@@ -13,6 +13,7 @@ import { IslandProbe } from './dev/IslandProbe';
 import { ShoreProbe } from './dev/ShoreProbe';
 import { ShadowProbe } from './dev/ShadowProbe';
 import { FreeCamera } from './app/FreeCamera';
+import { GLINT_SOLO_OPTIONS } from './art/seaRamp';
 import { SEA_STATE_OPTIONS, type SeaStateName } from './art/seaStates';
 import { TIME_OF_DAY_NAMES, type TimeOfDayName } from './art/timeOfDay';
 import { globalUniforms } from './render/shading/ShadingUniforms';
@@ -333,9 +334,24 @@ if (sceneName === 'palette') {
     sunDiscDeg: THREE.MathUtils.radToDeg(Math.acos(globalUniforms.uSunSize.value)),
     edgeNoiseAmount: u.uEdgeNoiseAmount!.value as number,
     edgeNoiseScale: u.uEdgeNoiseScale!.value as number,
+    glintSolo: u.uGlintSolo!.value as number,
+    glintPatchWeight: (u.uGlintBehaviour!.value as THREE.Vector3).x,
+    glintRoadWeight: (u.uGlintBehaviour!.value as THREE.Vector3).y,
+    glintTipWeight: (u.uGlintBehaviour!.value as THREE.Vector3).z,
     glintCoverage: u.uGlintCoverage!.value as number,
-    glintStretch: u.uGlintStretch!.value as number,
-    glintScale: u.uGlintScale!.value as number,
+    glintAspect: u.uGlintAspect!.value as number,
+    glintCellMetres: u.uGlintCellMetres!.value as number,
+    glintRefDist: u.uGlintRefDist!.value as number,
+    glintWobble: u.uGlintWobble!.value as number,
+    glintSpeckle: u.uGlintSpeckle!.value as number,
+    glintLiftBottom: (u.uGlintLift!.value as THREE.Vector3).x,
+    glintLiftMiddle: (u.uGlintLift!.value as THREE.Vector3).y,
+    glintLiftTop: (u.uGlintLift!.value as THREE.Vector3).z,
+    glintPathLowSun: THREE.MathUtils.radToDeg(u.uGlintPathLowSun!.value as number),
+    glintPathHighSun: THREE.MathUtils.radToDeg(u.uGlintPathHighSun!.value as number),
+    glintNearLayers: u.uGlintNearLayers!.value as number,
+    glintFlickerFrom: u.uGlintFlickerFrom!.value as number,
+    glintFlickerDepth: u.uGlintFlickerDepth!.value as number,
     hazeStrength: globalUniforms.uHazeStrength.value,
     showReport: query.get('report') !== '0',
     verify: () => runGate(),
@@ -450,24 +466,118 @@ if (sceneName === 'palette') {
     });
 
   const glints = folder.addFolder('glints');
+  // NOT a behaviour selector. All three phenomena — wind patches, the glitter road, and light
+  // on the wave tips — run at once over the whole sea, which is what "All three" means and
+  // what the sea is meant to look like. The other entries ISOLATE one for tuning, and leaving
+  // the menu on one of them is a debug state, not a look.
   glints
-    .add(params, 'glintCoverage', 0, 0.12, 0.002)
-    .name('coverage')
+    .add(params, 'glintSolo', GLINT_SOLO_OPTIONS)
+    .name('solo (debug)')
+    .onChange((v: number) => {
+      u.uGlintSolo!.value = v;
+    });
+  glints
+    .add(params, 'glintCoverage', 0, 0.3, 0.005)
+    .name('coverage (all layers)')
     .onChange((v: number) => {
       u.uGlintCoverage!.value = v;
     });
+
+  // How the three behaviours weigh against each other, each as a multiple of the coverage
+  // above. They ADD: open water carries the patches, the road lays its own density over the
+  // wedge on top of them, and the tips add theirs along the crests. Zeroing one is the same as
+  // soloing the other two, without the menu.
+  const mix = glints.addFolder('behaviour mix (all three, always)');
+  mix
+    .add(params, 'glintPatchWeight', 0, 3, 0.05)
+    .name('patches')
+    .onChange((v: number) => ((u.uGlintBehaviour!.value as THREE.Vector3).x = v));
+  mix
+    .add(params, 'glintRoadWeight', 0, 3, 0.05)
+    .name('sun path (adds)')
+    .onChange((v: number) => ((u.uGlintBehaviour!.value as THREE.Vector3).y = v));
+  mix
+    .add(params, 'glintTipWeight', 0, 3, 0.05)
+    .name('wave tips')
+    .onChange((v: number) => ((u.uGlintBehaviour!.value as THREE.Vector3).z = v));
   glints
-    .add(params, 'glintStretch', 0.02, 0.5, 0.01)
-    .name('along-swell squash')
+    .add(params, 'glintCellMetres', 0.2, 6, 0.05)
+    .name('mark size (m across)')
     .onChange((v: number) => {
-      u.uGlintStretch!.value = v;
+      u.uGlintCellMetres!.value = v;
     });
   glints
-    .add(params, 'glintScale', 0.01, 0.2, 0.005)
-    .name('cell scale')
+    .add(params, 'glintAspect', 1, 14, 0.1)
+    .name('mark aspect (world)')
     .onChange((v: number) => {
-      u.uGlintScale!.value = v;
+      u.uGlintAspect!.value = v;
     });
+  // The distance control. Marks hold their apparent size beyond this, which is what keeps
+  // them visible to the horizon; drag it up and the far field thins back out.
+  glints
+    .add(params, 'glintRefDist', 40, 2000, 10)
+    .name('hold size past (m)')
+    .onChange((v: number) => {
+      u.uGlintRefDist!.value = v;
+    });
+  glints
+    .add(params, 'glintWobble', 0, 0.8, 0.01)
+    .name('puddle warp')
+    .onChange((v: number) => {
+      u.uGlintWobble!.value = v;
+    });
+  // Every mode, not just patches. Mode 1's distance speckle is taken as the max against this,
+  // so turning it up here twinkles the near field without touching the far one.
+  glints
+    .add(params, 'glintSpeckle', 0, 0.6, 0.01)
+    .name('base speckle')
+    .onChange((v: number) => {
+      u.uGlintSpeckle!.value = v;
+    });
+
+  // The colour ladder. These are offsets in LIGHTNESS against the water under each mark, not
+  // colours — negative goes darker than the sea, positive lighter. That is what lets one
+  // setting work over a turquoise shelf and over deep blue.
+  const ladder = glints.addFolder('colour ladder (off the water)');
+  ladder
+    .add(params, 'glintLiftTop', -0.5, 0.5, 0.01)
+    .name('top: lightest')
+    .onChange((v: number) => ((u.uGlintLift!.value as THREE.Vector3).z = v));
+  ladder
+    .add(params, 'glintLiftMiddle', -0.5, 0.5, 0.01)
+    .name('middle: lighter')
+    .onChange((v: number) => ((u.uGlintLift!.value as THREE.Vector3).y = v));
+  ladder
+    .add(params, 'glintLiftBottom', -0.5, 0.5, 0.01)
+    .name('bottom: darker')
+    .onChange((v: number) => ((u.uGlintLift!.value as THREE.Vector3).x = v));
+
+  // Mode 0 only. Half-angles: the road is a point at the camera and widens as it runs out,
+  // and it opens further as the sun drops toward the horizon.
+  const road = glints.addFolder('sun path (mode 0)');
+  road
+    .add(params, 'glintPathLowSun', 2, 80, 1)
+    .name('width, sun low (deg)')
+    .onChange((v: number) => (u.uGlintPathLowSun!.value = THREE.MathUtils.degToRad(v)));
+  road
+    .add(params, 'glintPathHighSun', 1, 60, 1)
+    .name('width, sun high (deg)')
+    .onChange((v: number) => (u.uGlintPathHighSun!.value = THREE.MathUtils.degToRad(v)));
+
+  // Mode 1 only.
+  const patches = glints.addFolder('patches (mode 1)');
+  patches
+    .add(params, 'glintNearLayers', 5, 400, 5)
+    .name('all 3 stops within (m)')
+    .onChange((v: number) => (u.uGlintNearLayers!.value = v));
+  patches
+    .add(params, 'glintFlickerFrom', 20, 800, 10)
+    .name('speckle beyond (m)')
+    .onChange((v: number) => (u.uGlintFlickerFrom!.value = v));
+  patches
+    .add(params, 'glintFlickerDepth', 0, 1, 0.05)
+    .name('speckle depth')
+    .onChange((v: number) => (u.uGlintFlickerDepth!.value = v));
 
   folder
     .add(params, 'hazeStrength', 0, 1, 0.01)

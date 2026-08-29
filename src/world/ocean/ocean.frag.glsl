@@ -66,9 +66,18 @@ void main() {
   // MASK; the visible mark is a hard step, never the lobe itself (02 §3.1, §4.3).
   vec3 halfVec = normalize(sunDir + viewDir);
   float facing = pow(clamp(dot(normal, halfVec), 0.0, 1.0), 6.0);
-  // Glint colour is derived from the shaded water beneath it (hue held, saturation halved,
-  // lightness lifted +0.185) rather than from fixed hexes, so it tracks the depth ramp.
-  vec4 glint = glintField(vWorldPos.xz, facing, color, depth01, length(cameraPosition - vWorldPos));
+  // "The reflection of the sun off the TOP of the waves" — so the field is given the wave
+  // phase as well as the tilt. `gerstnerCrest` runs -1..1 with 1 at the crest; remapped here
+  // rather than in glints.glsl because the wave stack lives on this side of the include and
+  // the land materials that pull in the glint chunk have no wave stack at all.
+  float crest = smoothstep(-0.1, 0.75, gerstnerCrest(vWorldPos.xz));
+  // `color` goes in as well as out: every stop of the ladder is derived from the water under
+  // the mark rather than from a fixed hex, so a glint over the turquoise shelf and the same
+  // glint over deep blue are two different colours. That is the whole reason it reads as
+  // light on this water instead of paint dropped on top of it.
+  vec4 glint = glintField(
+    vWorldPos.xz, sunDir, facing, crest, color, depth01, length(cameraPosition - vWorldPos)
+  );
   // Sheltered water carries almost no sparkle, and this is the thing `art/seaRamp.ts` has had
   // depth standing in for since it was written: "depth is the stand-in for shelter until Step 4
   // brings a fetch/wind field". Both cove reference frames measure zero glint coverage across

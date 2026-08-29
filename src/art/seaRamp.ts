@@ -250,3 +250,45 @@ export const GLINT_SHAPE = {
  * everything else. Flagging rather than reconciling, because which one is right at the
  * shallow end is a seabed-albedo decision that Step 3 makes.
  */
+
+/**
+ * HOW THE GLINT FIELD BEHAVES — three phenomena, all three at once, all over the whole sea.
+ *
+ * THEY ARE NOT MODES AND THIS IS NOT A SELECTOR. A real sea carries cat's-paw patches, a
+ * glitter road toward the sun, and light riding the tips of the waves SIMULTANEOUSLY, and each
+ * of the three covers the entire surface. What varies from place to place is only how dense
+ * each one is: the road is a wedge because that is where more of the surface happens to be
+ * angled at the sun, not because the rest of the ocean stops sparkling when you look that way.
+ * `uGlintBehaviour` in Ocean.ts is what weighs the three against each other; the field is
+ * their sum.
+ *
+ * This switch ISOLATES one of them, and it is a debug instrument. `all` is the default and the
+ * only value that renders the sea as intended. OceanProbe drives it to check that none of the
+ * three has silently gone empty — each has a plausible way to render nothing, and a gate that
+ * only ever exercises the sum would not notice one of them missing.
+ *
+ * Kept here beside GLINT_RULE rather than in seaStates.ts because this is a property of how
+ * light is drawn on the water, not of how rough the water is. The numbers are the values
+ * `uGlintSolo` is compared against in glints.glsl, where the branch has to be on a float —
+ * WebGL1 has no integer uniform branching worth relying on — so they are ordered and
+ * contiguous and the shader tests them with `< 0.5`, `< 1.5` and `< 2.5`. Changing one side
+ * without the other silently selects a neighbour.
+ */
+export const GLINT_SOLO = Object.freeze({
+  /** All three composited. The real sea, and the default. */
+  all: 0,
+  /** Cat's-paws of wind. The only behaviour graded by proximity — see uGlintNearLayers. */
+  patches: 1,
+  /** The glitter road: a wedge from the camera toward the sun, widening as the sun drops. */
+  sunPath: 2,
+  /** Top stop only, pinned to the crest phase and riding it, on the tips of the waves. */
+  waveTips: 3,
+} as const);
+
+/** Display label -> value, for the debug UI's dropdown. lil-gui shows the keys. */
+export const GLINT_SOLO_OPTIONS: Readonly<Record<string, number>> = Object.freeze({
+  'All three (the sea)': GLINT_SOLO.all,
+  'Only: patches': GLINT_SOLO.patches,
+  'Only: sun path': GLINT_SOLO.sunPath,
+  'Only: wave tips': GLINT_SOLO.waveTips,
+});

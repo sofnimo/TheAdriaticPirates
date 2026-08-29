@@ -99,15 +99,24 @@ const VIEWS: Record<OceanViewName, ViewSpec> = {
  * Two things have to match for the comparison to mean anything, and both are easy to get
  * wrong. Coverage is a fraction of PIXELS, so it only compares like-for-like at comparable
  * range: hence low and close, not the 300 m top-down. And mark aspect is measured in SCREEN
- * space, so the camera has to look ACROSS the swell — pointing along it foreshortens every
- * mark and the same field measures 0.5:1 instead of 6.9:1. The heading is therefore derived
- * from the sea state's own swell axis rather than hardcoded, so changing sea state in the UI
- * cannot silently invalidate the measurement.
+ * space, so the camera has to look ALONG the swell's direction of travel — that lays the
+ * CRESTS left-to-right across the frame, at full length, which is how image-4 is composed.
+ * The heading is derived from the sea state's own swell axis rather than hardcoded, so
+ * changing sea state in the UI cannot silently invalidate the measurement.
+ *
+ * THIS TURNED THROUGH 90 DEGREES when the glints moved onto the crest line. It used to look
+ * across the swell, which was right while marks were painted along the direction of travel
+ * and became wrong the moment they were painted along the crests instead: the same field
+ * measured 1.8:1 rather than 6.2:1, purely because its long axis now ran into the screen.
+ * The old comment here claimed that framing put "crests and marks" left-to-right, which was
+ * only ever half true — crests run at right angles to the swell, so they were always the axis
+ * pointing into the frame. Worth naming, because a stale framing does not announce itself:
+ * it reports a real number about the wrong projection of a correct field.
  */
 function skimView(state: SeaStateName, awayFrom: THREE.Vector3): ViewSpec {
   const [sx, sz] = swellDirection(SEA_STATES[state]);
-  // Perpendicular to the swell, so crests and marks run left-to-right across the frame.
-  let look = new THREE.Vector3(-sz, 0, sx).normalize();
+  // Along the swell axis, so the crests — and the marks lying on them — run left-to-right.
+  let look = new THREE.Vector3(sx, 0, sz).normalize();
   const eye = new THREE.Vector3(1500, 35, 1250);
   // Two perpendiculars exist; take the one pointing AWAY from the island, or the frame fills
   // with terrain and the glint measurement quietly becomes a measurement of a hillside.
