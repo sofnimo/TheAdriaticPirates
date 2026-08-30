@@ -48,6 +48,39 @@ function crestSpeed(wavelengthMetres: number): number {
   return Math.sqrt((9.8 * Math.max(wavelengthMetres, 0.001)) / (Math.PI * 2));
 }
 
+/**
+ * Mean of the wave-tip gate BEFORE the crest bias was introduced, over one wave.
+ *
+ * The tips used to gate on `smoothstep(-0.1, 0.75, sin(phase))`, whose mean over a uniform
+ * phase is this. It is the count the field is held to: "keep the current amount of glints"
+ * means keep this number, whatever shape the marks are then arranged in.
+ */
+const TIP_GATE_MEAN = 0.3922;
+
+/**
+ * Normaliser that turns the tip crest bias into a REDISTRIBUTION rather than a cull.
+ *
+ * The bias crowds marks toward the peak by raising the gate to a power, and any power above 1
+ * lowers the gate's mean — which does not merely rearrange the marks, it deletes them. At bias
+ * 4 the mean falls from 0.392 to 0.273 and 30% of the field quietly disappears, which would
+ * look exactly like "the bias also thinned it" and would be almost impossible to tell apart
+ * from a tuning problem by eye.
+ *
+ * So the mean is measured and divided back out. E[(0.5 + 0.5*sin)^bias] has a closed form for
+ * integer powers, but the slider is continuous, so it is integrated instead — 4096 samples of
+ * one period, which is exact to well past the precision a float uniform carries, and it runs
+ * once when the value changes rather than per frame.
+ */
+export function tipCrestNorm(bias: number): number {
+  const samples = 4096;
+  let sum = 0;
+  for (let i = 0; i < samples; i++) {
+    const phase = ((i + 0.5) / samples) * Math.PI * 2;
+    sum += Math.pow(0.5 + 0.5 * Math.sin(phase), Math.max(bias, 0));
+  }
+  return TIP_GATE_MEAN / Math.max(sum / samples, 1e-4);
+}
+
 export class Ocean {
   readonly material: THREE.ShaderMaterial;
   readonly rings: OceanRings;
@@ -131,12 +164,41 @@ export class Ocean {
       // How much sea each behaviour covers, relative to `uGlintCoverage`, as
       // (patches, sun path, wave tips).
       //
-      // The patches carry the authored figure on their own, so open water away from the road
-      // measures what the slider says. The road ADDS its weight on top inside the wedge, which
-      // is why the glitter path reads as a concentration rather than as the only lit water —
-      // at 1.0 it doubles the density there. The tips are weaker than either because the crest
-      // gate then thins them to the ~27% of the surface that is near a crest at any moment.
-      uGlintBehaviour: { value: new THREE.Vector3(1.0, 1.0, 0.6) },
+      // The patches carry the sea away from the road. The road lays its own marks on top
+      // inside the wedge, which is why the glitter path reads as a concentration rather than
+      // as the only lit water.
+      //
+      // (An older note here said the road at 1.0 "doubles the density" inside the wedge. That
+      // stopped being true when the patches became discrete clusters: the two no longer share
+      // a lattice, so the road's weight is not a multiple of the patches' any more. The three
+      // entries in this vector are only loosely comparable now — patches set how often a
+      // CLUSTER occurs, the other two set marks per cell on their own lattices.)
+      //
+      // THE ROAD IS DOWN 96%, 1.0 -> 0.04, in an 80% cut on top of an earlier one. Inside the
+      // wedge that is roughly one road mark per 11 m square at the top stop, thinning to
+      // nothing at the wavy edges. The wedge is also a quarter of its original width, so the
+      // sun path is now a genuinely faint feature — quite possibly below the point where you
+      // would notice it at all. `uGlintBehaviour.y` is the one number that brings it back.
+      //
+      // THE WAVE TIPS ARE A THREE-HUNDRED-AND-TWENTIETH OF WHAT THEY WERE, 0.6 -> 0.001875,
+      // in five halvings. They are the one behaviour that draws on every crest across the whole
+      // sea, so at any weight comparable to the other two they stop being an accent and become
+      // the sea's texture — a bright dashed line along every wave. Down here they are the
+      // occasional tip catching the light. The crest gate then thins them again, and the crest
+      // bias crowds what survives into the top quarter of the wave.
+      //
+      // For a sense of scale at this setting: about one tip mark per 2850 square metres of sea,
+      // or one per 53 m square, each mark about 1.1 x 3.7 m. Halvings buy less and less now —
+      // the spacing has gone 27, 38, 53 m across the last three — so if these still read as too
+      // present it is more likely their SIZE than their number. `uGlintLayerCell.z` shrinks the
+      // tip marks alone; the global size control would take the other two behaviours with it.
+      //
+      // Note this is a weight, not a count: `lodCount` in the shader multiplies it by the
+      // square of the mark-size control, so at the shipped size of 2 the density actually
+      // reaching the lattice is four times this. That is what keeps marks per square metre
+      // fixed when the size changes, and it means this number is only comparable against the
+      // other two entries here — never read as an absolute.
+      uGlintBehaviour: { value: new THREE.Vector3(1.0, 0.04, 0.001875) },
       uGlintCoverage: { value: SEA_STATES[seaState].glintCoverage },
       // Across-crest world size of a cell. image-4's marks work out at 1.2-2.4 m of actual
       // sea, so a cell a little under a metre across carries one at the authored aspect.
@@ -147,26 +209,63 @@ export class Ocean {
       // from. Matching screen-to-screen at comparable framing is the only comparison that
       // means anything.
       uGlintAspect: { value: GLINT_RULE.light.aspect * GLINT_RULE.screenToWorldAspect },
-      // Past this range the lattice grows with distance so marks hold their apparent size.
-      // At the authored cell size a mark subtends about 1.5 px at 160 m on this projection,
-      // and below roughly a pixel a stochastic field boils frame to frame.
-      uGlintRefDist: { value: 160 },
-      // How fast the mark lattice rides WITH the crests. Positive is downwave — see the sign
-      // note in glintCellUV, and `swellTravelDirection` in art/seaStates.ts for why the swell
-      // vector points the other way. Modes 0 and 1 want the slow slide; mode 2 wants the
-      // crests' own speed, below, or its marks strobe instead of travelling.
-      uGlintDrift: { value: 0.6 },
+      // ONE global size multiplier for every mark on the sea, and NOTHING DRIVES IT. Not view
+      // distance, which bent the lattice into arcs radiating from the camera, and not altitude
+      // either — a glint is a patch of water a couple of metres across and it should shrink
+      // with height like anything else in the frame. Marks are world-scale; perspective does
+      // the rest. See Ocean.update() for the full account of both attempts.
+      //
+      // Left as a uniform because "how big is a mark" is worth having one knob for, and having
+      // it here means the answer is a constant in one place rather than arithmetic spread over
+      // a frame callback.
+      uGlintLod: { value: 2 },
+      // How fast the ROAD lattice rides with the crests — and it is ZERO, so the glitter road
+      // is still. Its marks are pinned to the water exactly as the patches are, which leaves
+      // the wave tips as the only behaviour that moves at all.
+      //
+      // Kept as a live uniform rather than deleted along with the code that reads it. The
+      // machinery is a few lines in glintCellUV and it is where the sign convention is
+      // written down: positive is downwave, which is -uSwellDir, because gerstner phases as
+      // `k*dot(d,x) + omega*t` (see `swellTravelDirection` in art/seaStates.ts, and the class
+      // of bug it documents). Deleting that would mean rediscovering it to put the drift back.
+      uGlintDrift: { value: 0 },
       uGlintCrestSpeed: { value: crestSpeed(SEA_STATES[seaState].waves[0].wavelength) },
       uGlintFade: { value: 1 },
       // How far the outline wanders off a clean ellipse. At 0 the marks are perfect lozenges
       // and, in their thousands, read as one shape stamped over and over; up here they are
       // warped, puddle-shaped blobs, still elongated along the crest.
       uGlintWobble: { value: 0.28 },
-      // A little twinkle in EVERY mode, before mode 1's distance speckle is added on top.
-      // Real sparkle is never quite still even close in — the face that catches the sun this
-      // frame is not the one that catches it next — and a perfectly steady field reads as
-      // printed on the water. Kept low: past about 0.3 it starts to look like noise.
-      uGlintSpeckle: { value: 0.12 },
+      // Base twinkle for the patches and the road, before the distance speckle is added on
+      // top. The wave tips are excluded outright — they are the marks that move, and motion
+      // plus blinking reads as noise.
+      //
+      // SHIPPED AT ZERO, AND THE ZERO IS NEW ONLY IN NAME. This sat at 0.12 and did nothing at
+      // all: the old test was `mix(1.0, step(...), speckle) >= 0.5`, which with the step at 0
+      // is `1 - speckle`, so any value at or under 0.5 could never fail and any value above it
+      // blinked every mark in the field. It was a switch at 0.5 wearing the costume of an
+      // amount. It now draws per mark — `speckle` is the fraction of marks that twinkle — so
+      // the number finally means what it says, and 0 keeps the near field exactly as steady as
+      // it has actually been rendering all along. Dial it up for a little life close in.
+      uGlintSpeckle: { value: 0 },
+      // The wave tips get their own amount, and get it on purpose. Their own, because they are
+      // the only marks that are also travelling, so what reads as a lively twinkle on still
+      // water can read as a busy one on a mark already crossing the frame — the two want to be
+      // tuned apart. On purpose, because these marks USED to flicker for a reason that was not
+      // this: the gate deciding whether they existed was the four-wave sum sweeping underneath
+      // them, which is noise, and it is now gated on the dominant wave alone and is exactly
+      // steady. A quarter of the marks winking is an effect chosen on top of that.
+      // The glitter road does not twinkle at all, and it skips the distance speckle too — see
+      // the note in glintField. The road reaches the horizon, so almost all of it sits beyond
+      // where that term starts, and leaving it in would have made the road the one behaviour
+      // shimmering nearly everywhere while the other two sat quiet.
+      uGlintRoadSpeckle: { value: 0 },
+      uGlintTipSpeckle: { value: 0.25 },
+      // How hard tip marks crowd toward the very peak of the wave. 1 is the old even spread
+      // across the crest band; 4 puts 88% of them in the top quarter and, unlike the smoothstep
+      // this replaced, keeps them getting denser all the way up rather than levelling off over
+      // the top 30% of the wave. The norm below holds the COUNT fixed while they move.
+      uGlintTipCrestBias: { value: 4 },
+      uGlintTipCrestNorm: { value: tipCrestNorm(4) },
 
       // Per layer, ordered (bottom, middle, top).
       //
@@ -195,21 +294,69 @@ export class Ocean {
       uGlintLiftVar: { value: new THREE.Vector3(0.06, 0.11, 0.17) },
       uGlintMaxLight: { value: GLINT_RULE.maxLightness },
 
-      // Mode 0, the glitter road. A half-angle, so the wedge is a point at the camera and
-      // widens as it runs out — the upside-down triangle. 8 deg with the sun overhead opening
-      // to 34 deg on the horizon, which is roughly what a low sun does to a real glitter path.
-      uGlintPathHighSun: { value: THREE.MathUtils.degToRad(8) },
-      uGlintPathLowSun: { value: THREE.MathUtils.degToRad(34) },
+      // The glitter road. A half-angle, so the wedge is a point at the camera and widens as it
+      // runs out — the upside-down triangle.
+      //
+      // Narrowed twice. First both ends halved, 8/34 deg to 4/17. Then the WIDE end halved
+      // again on width rather than on angle: the road's width goes as tan(half-angle), so
+      // 17 deg does not halve to 8.5 but to atan(tan(17)/2) = 8.69, which is a width ratio of
+      // exactly 0.5000 against 0.4888 for the naive halving. A tenth of a degree hardly shows
+      // on the water, but the two are different operations and it costs nothing to do the one
+      // that was asked for.
+      //
+      // 4 deg with the sun overhead, opening to 8.69 on the horizon. The low-sun figure is
+      // still the larger of the two, so the road still widens as the sun drops — just over a
+      // much shorter range than it did.
+      uGlintPathHighSun: { value: THREE.MathUtils.degToRad(4) },
+      uGlintPathLowSun: { value: THREE.MathUtils.degToRad(8.69) },
       uGlintPathSoft: { value: 0.55 },
+      // Road marks are drawn 3x the size of the same stop elsewhere. The shader multiplies the
+      // road's density by the square of this so the COUNT does not move with it — a cell holds
+      // one mark, so growing the cell to grow the mark would otherwise spread the lattice and
+      // thin the road ninefold just as its marks got fat.
+      //
+      // Only the top stop draws in the road now, so this is the size of a highlight and there
+      // is nothing underneath it to stay in proportion with.
+      uGlintRoadScale: { value: 3 },
+      // WAVY SIDES, so the road reads as a triangle rather than as one. A ruled edge is the
+      // tell that gives a glitter path away as a stencil laid over the sea — nothing on water
+      // has a straight side — so the half-angle is perturbed by world-space noise and the
+      // boundary wanders in and out around the wedge it is still built from.
+      //
+      // 0.35 lets the edge move about a third of the half-angle either way, which at the
+      // shipped 4-8.7 deg wedge is a wander of a couple of degrees: clearly not ruled, still
+      // clearly a triangle. Past ~0.6 the sides start pinching in far enough to break the road
+      // into separate pools, which is a different look and probably not this one.
+      uGlintPathWaviness: { value: 0.35 },
+      // Length of one undulation, metres. Sized well above a glint cell and well below the
+      // road's own length, so it shapes the EDGE rather than either roughening it into noise
+      // or bending the whole road into a curve.
+      uGlintPathWaveScale: { value: 45 },
 
-      // Mode 1, patches. Scale ~90 m: cat's-paw sized, well above a glint cell, so it gates
-      // groups of marks rather than individuals.
-      uGlintPatchScale: { value: 90 },
-      uGlintPatchContrast: { value: 0.85 },
-      // Mean of smoothstep(0.35, 0.62, fbm2) over open water, taken as 0.5 and then checked
-      // by rendering: with it in place, patched coverage returns to the unpatched figure.
-      uGlintPatchMean: { value: 0.5 },
-      // Inside this the patch carries all three stops; beyond it only the top one resolves.
+      // The patches: countable clusters on a slot lattice, not a noise threshold.
+      //
+      // THE SLOT SIZE AND THE JITTER TOGETHER ARE THE MINIMUM GAP, and that is the whole
+      // reason the construction looks like this. Two patch centres in neighbouring slots can
+      // approach each other by at most half the jitter each, so the closest they ever come is
+      // cell * (1 - jitter) = 60 * 0.5 = 30 m. It is arithmetic rather than a rejection test,
+      // so no patch can ever violate it — which is what an fBM threshold could not promise at
+      // all, since noise has no notion of one patch ending and the next beginning.
+      uGlintPatchCell: { value: 60 },
+      uGlintPatchJitter: { value: 0.5 },
+      // "Sparingly": roughly a third of the slots carry a patch, and the sea state scales this
+      // (see GLINT_COVERAGE_REF) so calm water gets fewer cat's-paws rather than smaller ones.
+      uGlintPatchChance: { value: 0.32 },
+      // How far a cluster's members spread from its centre. Well under half the 30 m gap, so
+      // neighbouring clusters read as separate groups with open water between.
+      uGlintPatchRadius: { value: 7 },
+      // A cluster is elongated along the crest line, like the marks inside it — wind lays its
+      // paw prints down the wave, not across them.
+      uGlintPatchStretch: { value: 1.6 },
+      // The four allowed populations. A patch picks one and scatters exactly that many marks.
+      uGlintPatchCounts: { value: new THREE.Vector4(3, 5, 10, 15) },
+      // Inside this a cluster is drawn from all three stops; beyond it every member is the top
+      // stop. Graded on the PATCH's distance, not the pixel's, so a cluster changes character
+      // as one thing rather than across its own width.
       uGlintNearLayers: { value: 50 },
       uGlintFlickerFrom: { value: 100 },
       uGlintFlickerRate: { value: 5.5 },
@@ -382,12 +529,30 @@ export class Ocean {
 
     this.uniforms.uWaveTime!.value = elapsed;
 
-    // NO ALTITUDE FADE. This used to run `1 - smoothstep(700, 1100, altitude)`, which put the
-    // glint field at exactly zero from 1100 m up — and it was the real reason the sea went
-    // bare from the air, not the density taper it was usually blamed on. The field now holds
-    // its apparent mark size with distance instead (see uGlintRefDist), so height costs it
-    // nothing; the sun-facing and crest gates still thin it wherever the water tilts away,
-    // which is the only thinning that should happen.
+    // NOTHING HERE TOUCHES THE GLINT SIZE. Worth saying explicitly, because two different
+    // attempts to make marks hold their apparent size have now been taken out of this file and
+    // a third would be easy to add by reflex.
+    //
+    // The first scaled a mark by its DISTANCE from the eye. That factor is constant on circles
+    // around the camera and varies along every view ray, so it bent the lattice into arcs and
+    // the far sea read as a cartwheel radiating from the viewer. That one was a defect.
+    //
+    // The second scaled by camera ALTITUDE — no direction to radiate along, so it had none of
+    // that trouble, and it kept the sea lit from 1500 m. It is gone because glints growing as
+    // you climb is not what the sea does: a mark is a piece of water a couple of metres across
+    // and it should shrink with height like everything else in the frame. The references agree
+    // more than the old brief did — image-4 measures 16.1% coverage on near water, the
+    // mid-altitude frame 1.6%, and the two high-altitude frames show no discrete marks at all.
+    //
+    // So mark size is now a world-space constant and perspective does the whole job. Expect
+    // the field to thin out with height and to be effectively gone from high altitude, which
+    // is the reference behaviour. `uGlintLod` remains as a manual global size multiplier;
+    // nothing drives it per frame.
+    //
+    // NO ALTITUDE FADE either, and that is a separate thing. This used to run
+    // `1 - smoothstep(700, 1100, altitude)`, which put the field at exactly zero from 1100 m
+    // up — a hard cutoff rather than a natural thinning, and the real reason the sea went bare
+    // from the air.
   }
 
   dispose(): void {

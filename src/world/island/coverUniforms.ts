@@ -63,6 +63,12 @@ export function makeCoverUniforms(cover: CoverField, island: IslandField): Cover
     uForestThreshold: { value: c.forestThreshold },
     uForestSandMargin: { value: c.forestSandMargin },
 
+    uLeafSize: { value: c.leafSize },
+    uLeafAspect: { value: c.leafAspect },
+    uLeafFadeStart: { value: c.leafFadeStart },
+    uLeafFadeEnd: { value: c.leafFadeEnd },
+    uLeafNormalMix: { value: c.leafNormalMix },
+
     uNormalSpread: { value: c.normalSpread },
     uSplitMid: { value: c.splitMid },
     uSplitLit: { value: c.splitLit },
@@ -106,6 +112,14 @@ export function syncCoverUniforms(u: CoverUniforms): void {
 
   u.uForestThreshold!.value = c.forestThreshold;
   u.uForestSandMargin!.value = c.forestSandMargin;
+
+  // Leaf SIZE and FADE are live: they only move existing blades. `leavesPerHull` and
+  // `domeInset` are not here because they are baked into the crown geometry and need a rebake.
+  u.uLeafSize!.value = c.leafSize;
+  u.uLeafAspect!.value = c.leafAspect;
+  u.uLeafFadeStart!.value = c.leafFadeStart;
+  u.uLeafFadeEnd!.value = c.leafFadeEnd;
+  u.uLeafNormalMix!.value = c.leafNormalMix;
 
   u.uNormalSpread!.value = c.normalSpread;
   u.uSplitMid!.value = c.splitMid;

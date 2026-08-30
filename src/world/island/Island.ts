@@ -15,6 +15,8 @@ import TERRAIN_FRAG from './terrain.frag.glsl';
 import OVERLAY_VERT from './overlay.vert.glsl';
 import OVERLAY_FRAG from './overlay.frag.glsl';
 import CANOPY_VERT from './canopy.vert.glsl';
+import CANOPY_DEPTH_VERT from './canopy.depth.vert.glsl';
+import CANOPY_DEPTH_FRAG from './canopy.depth.frag.glsl';
 import CANOPY_FRAG from './canopy.frag.glsl';
 
 /**
@@ -59,6 +61,7 @@ export class Island {
   readonly terrainMaterial: THREE.ShaderMaterial;
   readonly overlayMaterial: THREE.ShaderMaterial;
   readonly canopyMaterial: THREE.ShaderMaterial;
+  readonly canopyDepthMaterial: THREE.ShaderMaterial;
 
   constructor(options: IslandOptions) {
     const { field, cover, coverUniforms, index } = options;
@@ -136,8 +139,20 @@ export class Island {
     // Drawn after the base, so its discarded fragments leave the base's depth untouched.
     this.overlayMesh.renderOrder = 1;
 
+    // THE SHADOW PASS SHARES THE UNIFORM BLOCK. It has to: leaf placement reads `uLeafSize`
+    // and `uLeafAspect`, and a depth material with its own copies would drift the moment
+    // anything moved one of them — leaves would cast shadows from a size they are not drawn
+    // at. Built here rather than inside buildCanopy because this is where the block lives.
+    this.canopyDepthMaterial = new THREE.ShaderMaterial({
+      uniforms: shared(),
+      vertexShader: CANOPY_DEPTH_VERT,
+      fragmentShader: CANOPY_DEPTH_FRAG,
+      side: THREE.DoubleSide,
+    });
+
     this.canopy = buildCanopy(cover, {
       material: this.canopyMaterial,
+      depthMaterial: this.canopyDepthMaterial,
       owner: index,
       ...(options.maxHulls !== undefined ? { maxHulls: options.maxHulls } : {}),
     });
@@ -182,6 +197,10 @@ export class Island {
     this.terrainMaterial.dispose();
     this.overlayMaterial.dispose();
     this.canopyMaterial.dispose();
+    // The shadow-pass material is owned here too. Missed, it leaks a compiled program per
+    // island on every structural edit — and the canopy is re-scattered by a slider, so that is
+    // once per drag, not once per session.
+    this.canopyDepthMaterial.dispose();
   }
 }
 

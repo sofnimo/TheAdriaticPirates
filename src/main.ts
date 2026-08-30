@@ -14,6 +14,7 @@ import { ShoreProbe } from './dev/ShoreProbe';
 import { ShadowProbe } from './dev/ShadowProbe';
 import { FreeCamera } from './app/FreeCamera';
 import { GLINT_SOLO_OPTIONS } from './art/seaRamp';
+import { tipCrestNorm } from './world/ocean/Ocean';
 import { SEA_STATE_OPTIONS, type SeaStateName } from './art/seaStates';
 import { TIME_OF_DAY_NAMES, type TimeOfDayName } from './art/timeOfDay';
 import { globalUniforms } from './render/shading/ShadingUniforms';
@@ -341,14 +342,23 @@ if (sceneName === 'palette') {
     glintCoverage: u.uGlintCoverage!.value as number,
     glintAspect: u.uGlintAspect!.value as number,
     glintCellMetres: u.uGlintCellMetres!.value as number,
-    glintRefDist: u.uGlintRefDist!.value as number,
+    glintMarkScale: u.uGlintLod!.value as number,
+    glintPatchCell: u.uGlintPatchCell!.value as number,
+    glintPatchChance: u.uGlintPatchChance!.value as number,
+    glintPatchRadius: u.uGlintPatchRadius!.value as number,
     glintWobble: u.uGlintWobble!.value as number,
     glintSpeckle: u.uGlintSpeckle!.value as number,
+    glintRoadSpeckle: u.uGlintRoadSpeckle!.value as number,
+    glintTipSpeckle: u.uGlintTipSpeckle!.value as number,
+    glintTipCrestBias: u.uGlintTipCrestBias!.value as number,
     glintLiftBottom: (u.uGlintLift!.value as THREE.Vector3).x,
     glintLiftMiddle: (u.uGlintLift!.value as THREE.Vector3).y,
     glintLiftTop: (u.uGlintLift!.value as THREE.Vector3).z,
     glintPathLowSun: THREE.MathUtils.radToDeg(u.uGlintPathLowSun!.value as number),
     glintPathHighSun: THREE.MathUtils.radToDeg(u.uGlintPathHighSun!.value as number),
+    glintRoadScale: u.uGlintRoadScale!.value as number,
+    glintPathWaviness: u.uGlintPathWaviness!.value as number,
+    glintPathWaveScale: u.uGlintPathWaveScale!.value as number,
     glintNearLayers: u.uGlintNearLayers!.value as number,
     glintFlickerFrom: u.uGlintFlickerFrom!.value as number,
     glintFlickerDepth: u.uGlintFlickerDepth!.value as number,
@@ -465,6 +475,32 @@ if (sceneName === 'palette') {
       u.uEdgeNoiseScale!.value = v;
     });
 
+  // ---- surf at the coastline ---------------------------------------------------------------
+  // The shore block is shared by the water and the land, so these move the foam and the wet
+  // sand it leaves behind together — which is the point of them being one animation.
+  const surf = folder.addFolder('surf');
+  const shoreU = test.shoreUniforms;
+  const surfParams = {
+    swashReach: shoreU.uSwashReach!.value as number,
+    wetSandBand: shoreU.uWetSandBand!.value as number,
+    foamReach: shoreU.uFoamReach!.value as number,
+  };
+  // How far the waterline travels up the beach and back on each wave. 0 pins it where it was
+  // before — a band that brightens and dims in place instead of water arriving.
+  surf
+    .add(surfParams, 'swashReach', 0, 40, 0.5)
+    .name('swash run-up (m)')
+    .onChange((v: number) => (shoreU.uSwashReach!.value = v));
+  // The damp band the wave leaves on the sand at rest; the swash above moves it.
+  surf
+    .add(surfParams, 'wetSandBand', 0, 60, 1)
+    .name('wet sand band (m)')
+    .onChange((v: number) => (shoreU.uWetSandBand!.value = v));
+  surf
+    .add(surfParams, 'foamReach', 10, 300, 5)
+    .name('surf zone (m offshore)')
+    .onChange((v: number) => (shoreU.uFoamReach!.value = v));
+
   const glints = folder.addFolder('glints');
   // NOT a behaviour selector. All three phenomena — wind patches, the glitter road, and light
   // on the wave tips — run at once over the whole sea, which is what "All three" means and
@@ -493,11 +529,13 @@ if (sceneName === 'palette') {
     .name('patches')
     .onChange((v: number) => ((u.uGlintBehaviour!.value as THREE.Vector3).x = v));
   mix
-    .add(params, 'glintRoadWeight', 0, 3, 0.05)
+    .add(params, 'glintRoadWeight', 0, 2, 0.01)
     .name('sun path (adds)')
     .onChange((v: number) => ((u.uGlintBehaviour!.value as THREE.Vector3).y = v));
+  // A much finer step than the other two: this one ships at 0.0075, over two orders below the
+  // patches and the road, and any coarser step would step straight over it.
   mix
-    .add(params, 'glintTipWeight', 0, 3, 0.05)
+    .add(params, 'glintTipWeight', 0, 0.05, 0.000625)
     .name('wave tips')
     .onChange((v: number) => ((u.uGlintBehaviour!.value as THREE.Vector3).z = v));
   glints
@@ -512,13 +550,14 @@ if (sceneName === 'palette') {
     .onChange((v: number) => {
       u.uGlintAspect!.value = v;
     });
-  // The distance control. Marks hold their apparent size beyond this, which is what keeps
-  // them visible to the horizon; drag it up and the far field thins back out.
+  // A flat multiplier on every mark on the sea. Nothing drives it — not range, not altitude;
+  // both of those have been tried and taken out (see Ocean.update). Marks are world-scale and
+  // perspective does the rest, so this is only here to say how big a mark is.
   glints
-    .add(params, 'glintRefDist', 40, 2000, 10)
-    .name('hold size past (m)')
+    .add(params, 'glintMarkScale', 0.25, 4, 0.05)
+    .name('mark size x')
     .onChange((v: number) => {
-      u.uGlintRefDist!.value = v;
+      u.uGlintLod!.value = v;
     });
   glints
     .add(params, 'glintWobble', 0, 0.8, 0.01)
@@ -528,11 +567,39 @@ if (sceneName === 'palette') {
     });
   // Every mode, not just patches. Mode 1's distance speckle is taken as the max against this,
   // so turning it up here twinkles the near field without touching the far one.
+  // Both of these are an AMOUNT — the fraction of marks that wink — not a rate. The two are
+  // split because the wave tips are the only marks that also travel, so they take a busier
+  // twinkle differently from marks sitting still on the water.
   glints
-    .add(params, 'glintSpeckle', 0, 0.6, 0.01)
-    .name('base speckle')
+    .add(params, 'glintSpeckle', 0, 1, 0.01)
+    .name('speckle: patches')
     .onChange((v: number) => {
       u.uGlintSpeckle!.value = v;
+    });
+  // The road ships still. Unlike the other two this is the ONLY speckle it gets — it opts out
+  // of the distance term as well, because a road running to the horizon lies almost entirely
+  // beyond where that term starts.
+  glints
+    .add(params, 'glintRoadSpeckle', 0, 1, 0.01)
+    .name('speckle: sun path')
+    .onChange((v: number) => {
+      u.uGlintRoadSpeckle!.value = v;
+    });
+  glints
+    .add(params, 'glintTipSpeckle', 0, 1, 0.01)
+    .name('speckle: wave tips')
+    .onChange((v: number) => {
+      u.uGlintTipSpeckle!.value = v;
+    });
+  // How hard the wave-tip marks crowd toward the peak. The normaliser has to be recomputed
+  // with it, or raising the bias would also delete marks instead of just moving them — at 4 it
+  // would lose 30% of them, which by eye is indistinguishable from a density problem.
+  glints
+    .add(params, 'glintTipCrestBias', 1, 10, 0.25)
+    .name('wave tips: crowd to peak')
+    .onChange((v: number) => {
+      u.uGlintTipCrestBias!.value = v;
+      u.uGlintTipCrestNorm!.value = tipCrestNorm(v);
     });
 
   // The colour ladder. These are offsets in LIGHTNESS against the water under each mark, not
@@ -556,16 +623,47 @@ if (sceneName === 'palette') {
   // and it opens further as the sun drops toward the horizon.
   const road = glints.addFolder('sun path (mode 0)');
   road
-    .add(params, 'glintPathLowSun', 2, 80, 1)
+    .add(params, 'glintPathLowSun', 1, 60, 0.25)
     .name('width, sun low (deg)')
     .onChange((v: number) => (u.uGlintPathLowSun!.value = THREE.MathUtils.degToRad(v)));
   road
-    .add(params, 'glintPathHighSun', 1, 60, 1)
+    .add(params, 'glintPathHighSun', 0.5, 40, 0.25)
     .name('width, sun high (deg)')
     .onChange((v: number) => (u.uGlintPathHighSun!.value = THREE.MathUtils.degToRad(v)));
+  // How far the sides wander off the ruled wedge, as a fraction of the half-angle. At 0 the
+  // road is a hard-edged cone of light, which is the thing that reads as a stencil laid on the
+  // sea. Past ~0.6 the sides pinch far enough to break the road into separate pools.
+  // Road marks only. The count is held as this moves — the shader compensates — so this is
+  // purely how big a highlight in the glitter path is.
+  road
+    .add(params, 'glintRoadScale', 0.5, 8, 0.1)
+    .name('mark size x (road)')
+    .onChange((v: number) => (u.uGlintRoadScale!.value = v));
+  road
+    .add(params, 'glintPathWaviness', 0, 0.8, 0.01)
+    .name('wavy sides')
+    .onChange((v: number) => (u.uGlintPathWaviness!.value = v));
+  road
+    .add(params, 'glintPathWaveScale', 10, 200, 5)
+    .name('undulation length (m)')
+    .onChange((v: number) => (u.uGlintPathWaveScale!.value = v));
 
-  // Mode 1 only.
-  const patches = glints.addFolder('patches (mode 1)');
+  const patches = glints.addFolder('patches (clusters)');
+  // The slot size IS the minimum gap, once the jitter is taken out of it: patch centres are
+  // never closer than cell * (1 - jitter), which is 30 m at the shipped 60 m / 0.5. Widening
+  // this spaces the clusters further apart; it does not make them bigger.
+  patches
+    .add(params, 'glintPatchCell', 20, 200, 5)
+    .name('slot / min gap x2 (m)')
+    .onChange((v: number) => (u.uGlintPatchCell!.value = v));
+  patches
+    .add(params, 'glintPatchChance', 0, 1, 0.02)
+    .name('how often (sparingly)')
+    .onChange((v: number) => (u.uGlintPatchChance!.value = v));
+  patches
+    .add(params, 'glintPatchRadius', 1, 25, 0.5)
+    .name('cluster spread (m)')
+    .onChange((v: number) => (u.uGlintPatchRadius!.value = v));
   patches
     .add(params, 'glintNearLayers', 5, 400, 5)
     .name('all 3 stops within (m)')
@@ -749,6 +847,23 @@ if (sceneName === 'palette') {
   canopyFolder.add(cover, 'splitLit', -1, 1, 0.01).name('lit threshold (0.45)').onChange(syncLive);
   canopyFolder.add(cover, 'dabDensity', 0, 0.4, 0.005).name('lit dab coverage (0.08)').onChange(syncLive);
   canopyFolder.add(cover, 'dabScale', 4, 120, 1).name('dab scale (m)').onChange(syncLive);
+  // ---- the leaves ---------------------------------------------------------------------
+  // Size, aspect, fade and normal mix are LIVE: they only move blades that already exist, so
+  // they update the uniform block. Count and dome inset are baked into the crown geometry and
+  // take a rebuild.
+  const leafFolder = canopyFolder.addFolder('leaves');
+  leafFolder.add(cover, 'leafSize', 0.5, 20, 0.25).name('blade size (m)').onChange(syncLive);
+  leafFolder.add(cover, 'leafAspect', 1, 6, 0.1).name('blade long:short').onChange(syncLive);
+  // The §8.1 lever. At 0 every blade takes the crown's smooth normal and the tier lights
+  // exactly as it did before leaves existed; at 1 each blade answers the sun on its own.
+  leafFolder.add(cover, 'leafNormalMix', 0, 1, 0.01).name('per-leaf sun response').onChange(syncLive);
+  leafFolder.add(cover, 'leafFadeStart', 20, 1500, 10).name('fade from (m)').onChange(syncLive);
+  leafFolder.add(cover, 'leafFadeEnd', 40, 3000, 10).name('gone by (m)').onChange(syncLive);
+  // COSTS TRIANGLES, and the tier is inside a probe-gated 1.2M budget: a crown is 42 triangles
+  // plus two per leaf, so this is the tier's main cost lever. Rebuilds the crown geometry.
+  leafFolder.add(cover, 'leavesPerHull', 0, 64, 1).name('leaves per crown').onFinishChange(rebuild);
+  leafFolder.add(cover, 'domeInset', 0.5, 1, 0.01).name('dome inset').onFinishChange(rebuild);
+
   canopyFolder.add(cover, 'forestThreshold', 0, 1, 0.01).name('treeline threshold').onChange(syncLive).onFinishChange(rebuild);
   canopyFolder.add(cover, 'forestSandMargin', 0, 120, 1).name('clearance off sand (m)').onChange(syncLive);
   canopyFolder.add(cover, 'forestCoverage', 0, 1, 0.01).name('coverage').onFinishChange(rebuild);
@@ -760,6 +875,12 @@ if (sceneName === 'palette') {
   canopyFolder.add(cover, 'hullJitter', 0, 1, 0.01).name('size variation').onFinishChange(rebuild);
   canopyFolder.add(cover, 'canopyMaxHulls', 1000, 120000, 1000).name('hull cap').onFinishChange(rebuild);
   tiers.hulls = test.archipelago.hulls;
+  // THE FIRST THING TO READ when the forest looks empty. It separates the two very different
+  // reasons a tree can be missing: zero here means the scatter placed nothing and the answer is
+  // in the cover gates below (oaks stand in the long grass and nowhere else, so the long-grass
+  // thresholds bound the forest before any forest setting applies); a healthy number here with
+  // nothing on screen means the crowns exist and something downstream — the leaf fade, tier
+  // visibility, the camera being past them — is hiding them.
   const hullsCtl = canopyFolder.add(tiers, 'hulls').name('hulls placed').disable();
 
   // ---- shared suitability ------------------------------------------------------------------

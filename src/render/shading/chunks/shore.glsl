@@ -32,8 +32,16 @@ uniform float uFoamCrestSoft;   // width of that threshold, kept narrow
 uniform float uFoamCrestNear;   // metres inside which foam rides the crests
 uniform float uFoamCrestFar;    // metres beyond which it settles to a steady band
 uniform float uFoamExposure;    // 0-1 fetch below which a coast simply does not foam
-uniform float uRunupSpeed;      // 0.55-0.7, now the wet-sand cycle
-uniform float uRunupFreq;       // 0.10-0.14 per metre, wet-sand cycle only
+// THE ARRIVING WAVE. Wave 1 of the sea state, written out as direction/wavenumber/frequency so
+// that both the water and the LAND can evaluate its phase — the terrain shader has no wave
+// stack, and this is the only thing it needs from one. Set by `syncShoreSwell`.
+uniform vec2 uSwashDir;         // unit XZ, the way the crests TRAVEL
+uniform float uSwashK;          // 2*pi / wavelength
+uniform float uSwashOmega;      // sqrt(g*k), the same relation the wave stack uses
+uniform float uSwashReach;      // metres the waterline runs up and back down the beach
+
+uniform vec3 cWetSand;          // the tint sand takes where the wave just reached
+uniform float uWetSandBand;     // metres of damp band at rest, before the swash moves it
 uniform float uFoamSteps;       // 3.0
 uniform float uFoamDetailLOD;   // 1 near, 0 at altitude — CPU-side, per 02b §2.4
 uniform vec3 cFoam;             // #ebedea
@@ -101,10 +109,42 @@ float quantizeFoam(float x, float steps) {
   return floor(s * steps) / steps;
 }
 
-/** The wet band breathes on the wave clock. A bare cycle, not a spatial swash front. */
-float wetPhase(float shoreDist) {
-  return 0.5 + 0.5 * sin(uWaveTime * uRunupSpeed * 6.2831853 - shoreDist * uRunupFreq);
+/**
+ * THE ARRIVING WAVE, at a point on the coast. -1 in the trough, +1 at the crest.
+ *
+ * The single phase both sides of the waterline run on. It is wave 1 of the sea state, written
+ * out here from `uSwashDir/K/Omega` rather than sampled from the Gerstner stack, because the
+ * land materials have no wave stack — the terrain shader knows nothing about `uWaves` — and
+ * this is the one number it needs from it. Three uniforms and a sine are cheaper than plumbing
+ * the whole stack into every land material, and being an exact copy of wave 1's phase term
+ * means the surf on the beach is running on the same wave you can see arriving offshore.
+ *
+ * It replaces a free sine on `uRunupSpeed`/`uRunupFreq` that had no relation to the swell at
+ * all: the sand could be drying while a crest was landing on it.
+ */
+float swashPhase(vec2 worldXZ) {
+  return sin(dot(uSwashDir, worldXZ) * uSwashK - uWaveTime * uSwashOmega);
 }
+
+/**
+ * How far up the beach the water has reached right now, in metres, signed.
+ *
+ * Positive pushes the waterline INLAND — the swash running up — and negative pulls it back
+ * down as the water withdraws. Everything that keys off distance-from-shore subtracts this, so
+ * the whole surf band travels up and down the sand together instead of the foam brightening
+ * and dimming where it stands.
+ *
+ * Slower coming back than going up. A swash rushes in and drains out, so the phase is bent
+ * with a power: the crest half of the cycle is short and the retreat is long, which is the
+ * asymmetry that makes it read as water on sand rather than as a sine.
+ */
+float swashReach(vec2 worldXZ) {
+  float p = swashPhase(worldXZ);
+  float up = 0.5 + 0.5 * p;                  // 0..1
+  up = pow(up, 0.65);                        // fast up, slow back
+  return (up * 2.0 - 1.0) * uSwashReach;
+}
+
 
 /**
  * BREAKING CRESTS IN THE NEARSHORE — the foam model, rebuilt.
@@ -152,14 +192,37 @@ vec4 shoreFoam(vec2 worldXZ, float crest01, float exposure01, float viewDist) {
     if (uShoreDebug < 3.5) return vec4(vec3(s.exposure), 1.0);
   }
 
+  // THE EDGE IS RAGGED, NOT POLYGONAL, and this is where that is decided.
+  //
+  // `s.distance` comes out of an atlas at 8 m per texel over an 8 km tile. Bilinear across a
+  // texel that large is smooth in value but not in shape: its contours are the diagonals of the
+  // sample grid, so a band edge drawn on it runs in long straight facets with corners every
+  // 8 m. Quantised into three hard tones the facets become stair-steps, and that is the
+  // jaggedness at the waterline — geometry from the bake showing through, not aliasing.
+  //
+  // Perturbing the distance itself fixes it at the source. Every downstream band edge — foam,
+  // wet sand — follows the same wandering contour, so they stay consistent with each other
+  // while none of them is straight. Two octaves, at metre scale and at ten-metre scale, so the
+  // outline breaks up close in and still reads as an irregular coast further out. This softens
+  // no edges: a step() on a wandering field is exactly as hard as a step() on a flat one, which
+  // is what 00 §3 rule 1 asks for.
+  float edge = (fbm2(worldXZ * 0.09) - 0.5) * 3.4 + (fbm2(worldXZ * 0.021) - 0.5) * 7.0;
+
+  // AND THE WAVE RUNS UP THE BEACH. Subtracting the swash moves the whole surf band inshore as
+  // a crest lands and drags it back out as the water withdraws, so the waterline travels.
+  // Before this the band sat still and only changed brightness, which reads as foam blinking
+  // on and off rather than as water arriving.
+  float dist = s.distance - swashReach(worldXZ) + edge;
+
   // Water only, and only inside the band. Land has no foam on it, and neither does open sea.
-  if (!s.inAtlas || s.distance < 0.0 || s.distance > uFoamReach) return vec4(0.0);
+  // Tested on the SHIFTED distance, so the foam follows the wave past the still waterline.
+  if (!s.inAtlas || s.distance < 0.0 || dist > uFoamReach) return vec4(0.0);
   if (uFoamEnable < 0.5) return vec4(0.0);
 
   // 1. Close to shore. Full strength at the waterline, gone by the reach — a wave breaks
   //    harder the shallower it gets, so this is a ramp rather than a hard edge on the outer
   //    limit. The edge that must stay hard is the crest gate below, not this one.
-  float near = 1.0 - smoothstep(uFoamReach * 0.35, uFoamReach, s.distance);
+  float near = 1.0 - smoothstep(uFoamReach * 0.35, uFoamReach, max(dist, 0.0));
 
   // 2. On the side the swell arrives from. Below the threshold there is simply no foam: the
   //    lee of an island is not lightly foamed, it is glassy.
@@ -252,10 +315,18 @@ vec3 applyWetSand(vec3 albedo, vec2 worldXZ, vec3 wetTint, float bandWidth) {
   ShoreSample s = sampleShore(worldXZ);
   if (!s.inAtlas || s.distance > 0.0) return albedo;
 
-  float landward = -s.distance;                 // metres inland from the waterline
-  float phase = wetPhase(s.distance);
-  float reach = bandWidth * mix(0.5, 1.0, s.exposure) * (0.55 + 0.45 * phase);
-  float wet = 1.0 - smoothstep(0.0, reach, landward);
+  // THE SAME SWASH THE FOAM RIDES, and the same ragged edge, so the damp line and the surf
+  // that wet it are one event seen from two sides of the waterline rather than two animations
+  // that happen to be near each other. The wave runs up: the band reaches inland. It drains:
+  // the band shrinks back and the sand behind it dries.
+  float edge = (fbm2(worldXZ * 0.09) - 0.5) * 3.4 + (fbm2(worldXZ * 0.021) - 0.5) * 7.0;
+  float landward = -s.distance - edge;          // metres inland from the waterline
+  float swash = swashReach(worldXZ);
+
+  // An exposed shore is worked harder, so its wet band is wider — the same exposure the foam
+  // gates on, read off the atlas rather than recomputed.
+  float reach = bandWidth * mix(0.5, 1.0, s.exposure) + swash;
+  float wet = 1.0 - smoothstep(0.0, max(reach, 0.5), landward);
   // Quantised like the foam, for the same reason: a smooth damp gradient is a soft edge.
   wet = quantizeFoam(wet, uFoamSteps);
   return mix(albedo, wetTint, wet * 0.85);

@@ -37,8 +37,24 @@ export function makeShoreUniforms(atlas: ShoreAtlas): ShoreUniforms {
     // is glassy, not lightly flecked, so this asks for a coast the swell plainly reaches
     // rather than one it merely wraps a little energy around.
     uFoamExposure: { value: 0.6 },
-    uRunupSpeed: { value: 0.62 },
-    uRunupFreq: { value: 0.12 },
+    // THE ARRIVING WAVE, shared by the foam and the wet sand.
+    //
+    // These are wave 1 of the sea state — its travel direction, wave number and angular
+    // frequency — pushed in by `syncShoreSwell` whenever the swell changes. They exist so that
+    // both sides of the waterline can evaluate the SAME phase at the same world point: the
+    // water uses it to run the surf up and back down the beach, the land uses it to darken the
+    // sand the wave just covered.
+    //
+    // Before this the run-up was a free sine of its own (`uRunupSpeed`, `uRunupFreq`) with no
+    // relation to the waves on screen. The block's own header promised the opposite — "both
+    // materials read the same run-up phase ... or the damp band and the foam that made it will
+    // visibly drift apart" — and drift apart is exactly what they did, because nothing tied
+    // either of them to the swell. A wave could roll in while the foam was retreating.
+    uSwashDir: { value: new THREE.Vector2(0, 1) },
+    uSwashK: { value: 0.037 },
+    uSwashOmega: { value: 0.6 },
+    /** Metres the waterline travels up and back down the beach over one wave. */
+    uSwashReach: { value: 9 },
     uFoamSteps: { value: 3 },
     uFoamDetailLOD: { value: 1 },
     cFoam: { value: new THREE.Color(SEA.crestHigh.hex) },
@@ -50,6 +66,27 @@ export function makeShoreUniforms(atlas: ShoreAtlas): ShoreUniforms {
     uShoreDebug: { value: 0 },
     uFoamEnable: { value: 1 },
   };
+}
+
+/**
+ * Point the shore's swash at the swell that is actually running.
+ *
+ * Called whenever the sea state or the wave heading changes, from the same place that sets the
+ * ocean's own wave stack — so the surf on the beach and the waves arriving at it are the same
+ * wave, described once. `k` and `omega` are the deep-water relation the wave stack already
+ * uses, `omega = sqrt(g*k)` with `k = 2*pi/L`; `dir` is the direction the crests TRAVEL, which
+ * is the opposite of the authored bearing (see `swellTravelDirection` in art/seaStates.ts, and
+ * the mirrored-world bug it documents).
+ */
+export function syncShoreSwell(
+  uniforms: ShoreUniforms,
+  travelDir: readonly [number, number],
+  wavelengthMetres: number,
+): void {
+  const k = (Math.PI * 2) / Math.max(wavelengthMetres, 1);
+  (uniforms.uSwashDir!.value as THREE.Vector2).set(travelDir[0], travelDir[1]).normalize();
+  uniforms.uSwashK!.value = k;
+  uniforms.uSwashOmega!.value = Math.sqrt(9.8 * k);
 }
 
 /**

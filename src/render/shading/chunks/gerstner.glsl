@@ -72,6 +72,27 @@ float gerstnerCrest(vec2 worldXZ) {
   return h / max(amp, 1e-4);
 }
 
+/**
+ * The DOMINANT wave's phase alone, -1 to 1. Wave 1, without the other three.
+ *
+ * For anything that RIDES the swell rather than merely sitting on it. The four components
+ * travel at four different speeds — a Gerstner wave's phase speed is sqrt(g/k), so the 170 m
+ * swell runs at 16.3 m/s while the 55 m ripple runs at 9.3 — and their sum therefore has no
+ * single velocity. Nothing can travel with `gerstnerCrest`, because `gerstnerCrest` is not
+ * going anywhere in particular: it is an interference pattern that evolves in place.
+ *
+ * That is exactly what made the wave-tip glints flicker. Their lattice rides at wave 1's
+ * phase speed, which holds each mark at a constant phase OF WAVE 1 — but the gate deciding
+ * whether the mark existed was reading the four-wave sum, which kept sweeping past underneath
+ * and blinking marks in and out as it went. Gated on this instead, a travelling mark's phase
+ * is exactly constant, so it holds its place on its crest and simply moves.
+ */
+float gerstnerCrestDominant(vec2 worldXZ) {
+  float k = 6.28318530718 / max(uWaves[0].z, 0.001);
+  float phase = k * dot(normalize(uWaves[0].xy), worldXZ) + sqrt(GERSTNER_G * k) * uWaveTime;
+  return sin(phase);
+}
+
 /** Horizontal + vertical displacement at a world XZ position. */
 vec3 gerstnerOffset(vec2 worldXZ) {
   vec3 offset = vec3(0.0);

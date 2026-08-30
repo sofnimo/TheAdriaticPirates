@@ -71,19 +71,39 @@ void main() {
   // rather than in glints.glsl because the wave stack lives on this side of the include and
   // the land materials that pull in the glint chunk have no wave stack at all.
   float crest = smoothstep(-0.1, 0.75, gerstnerCrest(vWorldPos.xz));
+  // And the DOMINANT wave's phase on its own, for the marks that ride the swell rather than
+  // sit on it. The four-wave sum has no single velocity for anything to travel with — see
+  // gerstnerCrestDominant. This is what keeps the wave-tip glints from flickering.
+  //
+  // RAW, not smoothstepped like `crest` above. The tips want density to keep climbing all the
+  // way to the peak, and a smoothstep saturates: everything above sin = 0.75 comes back as
+  // exactly 1, so the top of the wave arrives as a plateau with no gradient left in it. The
+  // shaping happens in glints.glsl, on the unclipped phase.
+  float crestRide = gerstnerCrestDominant(vWorldPos.xz);
   // `color` goes in as well as out: every stop of the ladder is derived from the water under
   // the mark rather than from a fixed hex, so a glint over the turquoise shelf and the same
   // glint over deep blue are two different colours. That is the whole reason it reads as
   // light on this water instead of paint dropped on top of it.
+  // Shelter goes IN, rather than being multiplied onto the result — see the note below.
   vec4 glint = glintField(
-    vWorldPos.xz, sunDir, facing, crest, color, depth01, length(cameraPosition - vWorldPos)
+    vWorldPos.xz, sunDir, facing, crest, crestRide, color, depth01,
+    shelterExposure(vWorldPos.xz), length(cameraPosition - vWorldPos)
   );
   // Sheltered water carries almost no sparkle, and this is the thing `art/seaRamp.ts` has had
   // depth standing in for since it was written: "depth is the stand-in for shelter until Step 4
   // brings a fetch/wind field". Both cove reference frames measure zero glint coverage across
   // the whole turquoise shelf, and it is not because the water there is shallow — it is because
   // nothing is disturbing it. Now that the fetch field exists, it says so directly.
-  color = mix(color, glint.rgb, glint.a * shelterExposure(vWorldPos.xz));
+  //
+  // BUT SHELTER THINS THE FIELD, IT DOES NOT DIM IT, which is why the exposure went in as an
+  // argument above instead of being multiplied onto the mask here. Multiplying it here made the
+  // blend PARTIAL: at half exposure every mark in the lee was drawn halfway between its own
+  // colour and the water under it, so the marks that survived in sheltered water were washed-out
+  // ghosts of a glint rather than glints. A mark is a hard-edged piece of light — it is there at
+  // its own colour or it is not there — so exposure now scales how MANY marks exist and the ones
+  // that do come out at full strength. Same rule the depth fade, the proximity grading and the
+  // master fade all follow inside the chunk; this was the last place still breaking it.
+  color = mix(color, glint.rgb, glint.a);
 
   // ---- shoreline foam ---------------------------------------------------------
   // Laid over the water AFTER the ramp and the glints, and BEFORE the haze:

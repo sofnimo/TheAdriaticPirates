@@ -7,7 +7,7 @@ import { Archipelago } from '../world/island/Archipelago';
 import { TEST_ISLAND_SEED } from '../world/island/IslandSpec';
 import type { CoverField } from '../world/island/CoverField';
 import { ShoreAtlas } from '../world/shore/ShoreAtlas';
-import { makeShoreUniforms, updateFoamLOD, type ShoreUniforms } from '../world/shore/shoreUniforms';
+import { makeShoreUniforms, syncShoreSwell, updateFoamLOD, type ShoreUniforms } from '../world/shore/shoreUniforms';
 import {
   DEFAULT_SEA_STATE, SEA_STATES, swellDirection, swellTravelDirection, type SeaStateName,
 } from '../art/seaStates';
@@ -600,10 +600,14 @@ export class OceanTestScene {
     // The heading offset goes into the BEARING, not into a rotation of the result — the same
     // arithmetic `Ocean.applySeaState` does to the waves, so the two cannot diverge. Rotating
     // the vector instead turned the shadows the wrong way at twice the slider's angle.
-    const [dx, dz] = swellTravelDirection(
-      SEA_STATES[this.ocean.seaStateName], this.ocean.headingOffsetDeg,
-    );
+    const state = SEA_STATES[this.ocean.seaStateName];
+    const [dx, dz] = swellTravelDirection(state, this.ocean.headingOffsetDeg);
     this.shelter.bake(dx, dz);
+    // And point the SURF at the same swell, from the same vector, in the same call. The beach's
+    // run-up is wave 1's phase (see `swashPhase`), so a sea state or heading change that missed
+    // this would leave the waterline breathing on the previous swell while a new one arrived —
+    // the same class of bug as the aircraft left riding the old stack, and just as quiet.
+    syncShoreSwell(this.shoreUniforms, [dx, dz], state.waves[0].wavelength);
   }
 
   /** Force the wave clock, for the frame-to-frame stability probe. */

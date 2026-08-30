@@ -101,7 +101,32 @@ export class PostChain {
 
     const size = options.renderer.getDrawingBufferSize(new THREE.Vector2());
 
-    this.composer = new EffectComposer(options.renderer);
+    // A MULTISAMPLED TARGET, PASSED IN EXPLICITLY — and without it the whole game renders with
+    // no antialiasing at all.
+    //
+    // `RendererConfig` asks for `antialias: true`, which is honoured, and it does nothing here:
+    // that flag multisamples the DEFAULT FRAMEBUFFER, and a composer never draws to the default
+    // framebuffer. It renders the scene into its own target and only blits the finished image
+    // to the screen. three's EffectComposer builds that target itself when one is not supplied,
+    // with `{ type: HalfFloatType }` and no `samples` — so it defaults to zero and every edge in
+    // the frame comes out hard-stepped. The renderer flag is still worth keeping: it covers the
+    // `?post=0` path, where the scene does go straight to the default framebuffer.
+    //
+    // It shows worst on the waterline, which is why this was found there. That edge is the
+    // highest-contrast boundary in the frame — near-white foam against deep blue — and it runs
+    // close to horizontal across long stretches, the orientation that stair-steps most visibly.
+    // But nothing was being antialiased: island silhouettes, the leaf blades and the glint marks
+    // were all aliased for the same reason.
+    //
+    // 4 samples rather than 8: the cost is bandwidth on a full-screen HalfFloat target, and
+    // the returns past 4 are slight on edges this high-contrast.
+    const target = new THREE.WebGLRenderTarget(size.x, size.y, {
+      type: THREE.HalfFloatType,
+      samples: 4,
+    });
+    target.texture.name = 'PostChain.rt';
+
+    this.composer = new EffectComposer(options.renderer, target);
     // The composer's own default is 1; the renderer already carries the device ratio and
     // setSize() below is given drawing-buffer pixels, so leave it at 1 and do the maths once.
     this.composer.setPixelRatio(1);

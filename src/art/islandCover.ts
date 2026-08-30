@@ -131,6 +131,49 @@ export interface IslandCoverConfig {
   /** STRUCTURAL. Hard cap on hull instances across the whole tile. */
   canopyMaxHulls: number;
 
+  /* ------------------------------------------------------------------ C leaves */
+  /**
+   * STRUCTURAL. 2D blades clad onto each crown, baked into the shared crown geometry.
+   *
+   * THIS IS THE TRIANGLE BUDGET LEVER FOR THE WHOLE TIER. Every crown carries the dome's 42
+   * triangles plus two per leaf, and there are up to `canopyMaxHulls` crowns — so at 26000
+   * crowns, each leaf added to this number costs 52000 triangles across the tile. 34 leaves
+   * takes a crown from 42 triangles to 110 and the tier from 1.1M to 2.9M. They are very small
+   * triangles and most of them fade to nothing past `leafFadeEnd`, but the vertex work does
+   * not fade — every leaf of every unculled crown is still transformed.
+   */
+  leavesPerHull: number;
+  /** Live. Metres across the short axis of a blade. */
+  leafSize: number;
+  /** Live. Long:short of a blade. 1 is a disc; a leaf wants 2-3. */
+  leafAspect: number;
+  /**
+   * Live. Metres at which blades start shrinking, and where only the hull is left.
+   *
+   * The answer to the one half of `05 §215` that survives world-fixed leaves: a blade smaller
+   * than a pixel sparkles as it crosses the sampling grid. Past this band the smooth hull
+   * carries the crown as the painted mass the doc asks for, and the handover is a size ramp
+   * rather than a switch.
+   */
+  leafFadeStart: number;
+  leafFadeEnd: number;
+  /**
+   * Live. 0 lights every blade by the crown's smooth normal, 1 by the blade's own.
+   *
+   * The §8.1 lever, kept reachable. At 0 the leaves are a silhouette treatment only and the
+   * tier lights exactly as it did before they existed; at 1 each blade answers the sun on its
+   * own, which is what they are for.
+   */
+  leafNormalMix: number;
+  /**
+   * STRUCTURAL. How far the dome is pulled inside the leaf shell, as a fraction of radius.
+   *
+   * The dome is still the crown's body — a few dozen blades cover a few percent of a 21 m
+   * dome, so without it a crown is a sieve with the hillside showing through. Inset so the
+   * blades stand proud of it instead of z-fighting its surface.
+   */
+  domeInset: number;
+
   /** Live. 0 = broad top-lit mass, 1 = rounder sun-side split. §8.1, start 0.35-0.75. */
   normalSpread: number;
   /** Live. N·L thresholds for the mid and lit stops. §11 starts at 0.15 / 0.45. */
@@ -199,6 +242,32 @@ export const ISLAND_COVER: IslandCoverConfig = {
   hullHeight: 12,
   hullJitter: 0.4,
   canopyMaxHulls: 26000,
+
+  // 24 blades on a 21 m crown, and the number is set by the BUDGET rather than by taste.
+  //
+  // A crown costs 42 triangles for its dome plus two per leaf, so this multiplies the whole
+  // tier's triangle count by (42 + 2n)/42 — 2.14x at 24, 2.62x at 34, 3.6x at 50. 03 §10.1
+  // allows 1.2M island triangles and IslandProbe gates on it, so the headroom here is however
+  // much of that the terrain mesh and the existing crowns are not already using. 24 reads as
+  // foliage rather than as a dome with confetti on it while roughly doubling the tier; going
+  // further is a budget decision that wants the probe's actual figure in front of it.
+  leavesPerHull: 24,
+  // 5 m across and 2.4 times as long. Not a botanical leaf — at 21 m of crown a real one would
+  // be a tenth of a pixel from any height this game is played at. This is the painted-dab
+  // scale the rest of the art direction works in: a mark that reads as a leaf, sized to be
+  // seen from a seaplane.
+  leafSize: 5,
+  leafAspect: 2.4,
+  // FAR ENOUGH OUT TO ACTUALLY SEE THEM. These first shipped at 260/620 m, which was set by
+  // worrying about the sparkle §215 warns of and not by checking where this world is looked at
+  // from: the aerial island view sits ~700 m off the hero island and the canopy view ~220 m,
+  // so leaves were gone or going in every framing that matters and the tier rendered as the
+  // bare domes it had before. The sparkle is a real effect and this may need pulling back in,
+  // but it can only be judged on leaves that are on screen in the first place.
+  leafFadeStart: 1200,
+  leafFadeEnd: 2600,
+  leafNormalMix: 1,
+  domeInset: 0.9,
 
   normalSpread: 0.55,
   splitMid: 0.15,
