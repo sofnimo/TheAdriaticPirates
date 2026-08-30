@@ -1,0 +1,107 @@
+{
+ "asset": {
+  "version": "2.0",
+  "generator": "TheAdriaticPirates model bench \u2014 reference box"
+ },
+ "scene": 0,
+ "scenes": [
+  {
+   "name": "reference-box",
+   "nodes": [
+    0
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "name": "ReferenceBox",
+   "mesh": 0
+  }
+ ],
+ "meshes": [
+  {
+   "name": "ReferenceBox",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1
+     },
+     "indices": 2,
+     "material": 0
+    }
+   ]
+  }
+ ],
+ "materials": [
+  {
+   "name": "Terracotta",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     0.3763,
+     0.0241,
+     0.0031,
+     1.0
+    ],
+    "metallicFactor": 0.0,
+    "roughnessFactor": 1.0
+   }
+  }
+ ],
+ "buffers": [
+  {
+   "byteLength": 648,
+   "uri": "data:application/octet-stream;base64,AACgwAAAwL8AAEBAAACgQAAAwL8AAEBAAACgQAAAwD8AAEBAAACgwAAAwD8AAEBAAACgQAAAwL8AAEDAAACgwAAAwL8AAEDAAACgwAAAwD8AAEDAAACgQAAAwD8AAEDAAACgQAAAwL8AAEBAAACgQAAAwL8AAEDAAACgQAAAwD8AAEDAAACgQAAAwD8AAEBAAACgwAAAwL8AAEDAAACgwAAAwL8AAEBAAACgwAAAwD8AAEBAAACgwAAAwD8AAEDAAACgwAAAwD8AAEBAAACgQAAAwD8AAEBAAACgQAAAwD8AAEDAAACgwAAAwD8AAEDAAACgwAAAwL8AAEDAAACgQAAAwL8AAEDAAACgQAAAwL8AAEBAAACgwAAAwL8AAEBAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAABAAIAAAACAAMABAAFAAYABAAGAAcACAAJAAoACAAKAAsADAANAA4ADAAOAA8AEAARABIAEAASABMAFAAVABYAFAAWABcA"
+  }
+ ],
+ "bufferViews": [
+  {
+   "buffer": 0,
+   "byteOffset": 0,
+   "byteLength": 288,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 288,
+   "byteLength": 288,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 576,
+   "byteLength": 72,
+   "target": 34963
+  }
+ ],
+ "accessors": [
+  {
+   "bufferView": 0,
+   "componentType": 5126,
+   "count": 24,
+   "type": "VEC3",
+   "min": [
+    -5.0,
+    -1.5,
+    -3.0
+   ],
+   "max": [
+    5.0,
+    1.5,
+    3.0
+   ]
+  },
+  {
+   "bufferView": 1,
+   "componentType": 5126,
+   "count": 24,
+   "type": "VEC3"
+  },
+  {
+   "bufferView": 2,
+   "componentType": 5123,
+   "count": 36,
+   "type": "SCALAR"
+  }
+ ]
+}

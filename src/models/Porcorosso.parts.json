@@ -1,0 +1,4 @@
+{
+  "note": "The Sketchfab download bundles its showroom into the same FBX as the aircraft: an 8.8 m water plane (the 101k-triangle 'Plane'), a jetty ('boards'), a row of barrels, and a spare cabin parked off to one side at x=-5.5 ('COPY_cabin'). All of it is geometry, so all of it lands in the bounding box and the auto-fit sizes to the diorama instead of to the aeroplane. Hiding it here rather than in the viewer keeps the wingspan honest on every load. Un-tick any of them in the Parts panel to see the original scene.",
+  "hide": ["Plane", "boards", "barrels", "COPY_cabin"]
+}
