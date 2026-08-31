@@ -1,4 +1,22 @@
 {
-  "note": "The Sketchfab download bundles its showroom into the same FBX as the aircraft: an 8.8 m water plane (the 101k-triangle 'Plane'), a jetty ('boards'), a row of barrels, and a spare cabin parked off to one side at x=-5.5 ('COPY_cabin'). All of it is geometry, so all of it lands in the bounding box and the auto-fit sizes to the diorama instead of to the aeroplane. Hiding it here rather than in the viewer keeps the wingspan honest on every load. Un-tick any of them in the Parts panel to see the original scene.",
-  "hide": ["Plane", "boards", "barrels", "COPY_cabin"]
+  "note": "The Sketchfab download bundles a showroom and some deck dressing into the same FBX as the aircraft. 'Plane' is the asset's own 8.8 m water surface (101k triangles), 'boards' the jetty, 'barrels' the barrel row, and 'COPY_cabin' a spare cabin parked off to one side at x=-5.5. All of it is geometry, so all of it lands in the bounding box and the auto-fit sizes to the diorama instead of to the aeroplane. 'SpiroFit' is a mooring rope hanging off the hull with 'RIM', its ring, on the end -- fine on a model posed at a dock, wrong on an aircraft that is meant to fly. Un-tick any of them in the Parts panel to see the original.",
+  "hide": [
+    "Plane",
+    "boards",
+    "barrels",
+    "COPY_cabin",
+    "SpiroFit",
+    "RIM"
+  ],
+  "spinNote": "The propeller is its own part, with 'Propeller_ROUND' as the hub backplate and 'Cone' as the spinner nose -- all three share a centre at y=261, z=5.8 in model units, so they are one assembly on one shaft. The axis is auto-detected: the disc measures 10 x 176 x 233, and the 10 is the shaft. On rpm: at 60 fps a prop turns rpm/10 degrees per frame, and a two-blade disc looks identical every 180 degrees -- so it strobes to a standstill at 1800 rpm and its direction goes ambiguous around 900. 600 is about as fast as it can turn while still reading as forward motion; the default sits a little under that at 420, which is 42 degrees a frame -- brisk, with the blades still legible as separate blades rather than a disc. Push the panel slider past 900 if you want the alias; that is what a real prop does on camera.",
+  "spin": [
+    {
+      "parts": [
+        "propeller",
+        "Propeller_ROUND",
+        "Cone"
+      ],
+      "rpm": 420
+    }
+  ]
 }

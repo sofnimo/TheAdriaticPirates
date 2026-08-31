@@ -2,9 +2,18 @@ import * as THREE from 'three';
 import { Engine } from './app/Engine';
 import { DebugUI } from './app/DebugUI';
 import { FreeCamera } from './app/FreeCamera';
-import { GrassWorldScene, GRASS_VIEW_NAMES, type GrassViewName } from './dev/GrassWorldScene';
+import {
+  GrassWorldScene,
+  GRASS_VIEW_NAMES,
+  TOWN_BUILDINGS,
+  TOWN_LAMPS,
+  type GrassViewName,
+} from './dev/GrassWorldScene';
 import { MATERIAL_MODES, formatModelReport, type MaterialMode } from './dev/ModelStage';
+import { sidecarFor } from './dev/modelSidecar';
 import { TOON_DEFAULT_STEPS, TOON_MAX_STEPS, TOON_MIN_STEPS } from './dev/toonShading';
+import { BIRD_DEFAULT_FLAP_RATE } from './dev/grass/Birds';
+import { formatTownReport } from './dev/grass/Town';
 import { GRASS_PRESETS } from './vendor/grassField/presets';
 import { SEA_STATE_NAMES, type SeaStateName } from './art/seaStates';
 
@@ -17,6 +26,38 @@ const PLANE_URL = import.meta.glob('./models/Porcorosso.fbx', {
   query: '?url',
   import: 'default',
 })['./models/Porcorosso.fbx'] as (() => Promise<string>) | undefined;
+
+/**
+ * The town's fourteen assets, globbed as URLs rather than listed.
+ *
+ * Three formats and two texture extensions, so the glob is by extension and the
+ * lookup is by stem — `TOWN_BUILDINGS` names `nivelles1` and this finds whichever
+ * of `nivelles1.fbx` / `.obj` / `.dae` is actually on disk. A manifest that also
+ * had to carry file extensions would be one more thing to keep in sync with a
+ * folder that is gitignored and re-populated by hand.
+ */
+const TOWN_FILES = import.meta.glob('./models/town/*.{fbx,obj,dae,png,jpeg,jpg}', {
+  query: '?url',
+  import: 'default',
+}) as Record<string, () => Promise<string>>;
+
+const MODEL_EXT = ['fbx', 'obj', 'dae'];
+const TEXTURE_EXT = ['png', 'jpeg', 'jpg'];
+
+/** Resolve `nivelles1` + 'model' to the loader for `./models/town/nivelles1.fbx`. */
+function townFile(name: string, kind: 'model' | 'texture'): (() => Promise<string>) | undefined {
+  for (const ext of kind === 'model' ? MODEL_EXT : TEXTURE_EXT) {
+    const loader = TOWN_FILES['./models/town/' + name + '.' + ext];
+    if (loader) return loader;
+  }
+  return undefined;
+}
+
+/** Same deal for the birds — `bird.fbx`, five rigged gulls in one 330 kB file. */
+const BIRD_URL = import.meta.glob('./models/bird.fbx', {
+  query: '?url',
+  import: 'default',
+})['./models/bird.fbx'] as (() => Promise<string>) | undefined;
 
 /**
  * THE GRASS WORLD — `/grassworld`.
@@ -104,6 +145,8 @@ function paintReport(): void {
     'scattered   ' + s.blades.toLocaleString() + ' blades   ' + s.flowers.toLocaleString() + ' flowers   ' + s.patches + ' patches',
     'sea level   ' + scene.waterLevel.toFixed(2) + ' m   depth ramp x' + scene.depthExaggeration,
     '',
+    formatTownReport(scene.town?.reports ?? []),
+    '',
     formatModelReport(scene.stage?.report ?? null),
   ].join('\n');
 }
@@ -132,10 +175,22 @@ const params = {
   staticShadows: true,
   shadowStrength: 0.35,
   rebake: () => scene.bakeShadows(),
+  // `?town=0` runs the grass world as it was before the village arrived. Not just
+  // hidden — the fourteen town assets are never fetched, which is most of the
+  // page's load. Both worlds stay in the build; the URL picks one.
+  town: query.get('town') !== '0',
+  scaleFigures: true,
+  birds: true,
+  birdWingspan: 1.3,
+  birdSpeed: 1,
+  birdFlap: BIRD_DEFAULT_FLAP_RATE,
   planeAltitude: 0,
   planeYaw: 0,
   planeSpin: 0,
+  propRpm: 240,
   water: true,
+  skirt: true,
+  skirtDepth: 4,
   depthExaggeration: 30,
   grid: false,
   shadowHelper: false,
@@ -252,12 +307,64 @@ planeFolder
   .add(params, 'planeYaw', -180, 180, 1)
   .name('yaw (deg)')
   .onChange((v: number) => scene.stage.setYaw(v));
+// The propeller's own rotation, not the turntable below it. Above roughly 500 the
+// blades alias against the frame rate and read as a slow crawl backwards — which
+// is what a real 1800 rpm prop does on camera, and is why the sidecar's default is
+// a legible 240 rather than an accurate one.
+const propCtrl = planeFolder
+  .add(params, 'propRpm', 0, 1800, 10)
+  .name('propeller (rpm)')
+  .onChange((v: number) => {
+    const authored = scene.stage.spinnerRpm;
+    scene.stage.setSpinThrottle(authored > 0 ? v / authored : 0);
+  });
 planeFolder
   .add(params, 'planeSpin', 0, 90, 1)
   .name('turntable (deg/s)')
   .onChange((v: number) => {
     scene.stage.spin = v;
   });
+
+const townFolder = debug.gui.addFolder('Town');
+// Hidden outright under `?town=0`: the assets were never fetched, so every control
+// in here would be a dead switch, and a dead switch reads as a broken one.
+if (!params.town) townFolder.hide();
+townFolder.add(params, 'town').name('show').onChange((v: boolean) => {
+  if (scene.town) scene.town.group.visible = v;
+});
+townFolder
+  .add(params, 'scaleFigures')
+  .name('1.8 m figures')
+  // The scale reference. A door should reach about the figure's own height and a
+  // storey about three-quarters again; anything else means that building's
+  // declared height in TOWN_BUILDINGS is wrong.
+  .onChange((v: boolean) => scene.setScaleFigures(v));
+townFolder.open();
+
+const birdFolder = debug.gui.addFolder('Birds');
+birdFolder
+  .add(params, 'birds')
+  .name('show')
+  .onChange((v: boolean) => scene.birds?.setVisible(v));
+birdFolder
+  .add(params, 'birdWingspan', 0.4, 4, 0.05)
+  .name('wingspan (m)')
+  // Authored span is measured on load, so this is metres rather than a multiplier
+  // — 1.1 m is a herring gull, 2.5 m is an albatross.
+  .onChange((v: number) => scene.birds?.setWingspan(v));
+birdFolder
+  .add(params, 'birdFlap', 0, 6, 0.1)
+  // The clip is one 0.67 s wingbeat, so 1 is 1.5 flaps a second and the default
+  // 2.2 is about a gull's 3. Independent of "speed x", which is the circuit.
+  .name('wingbeat x')
+  .onChange((v: number) => scene.birds?.setFlapRate(v));
+birdFolder
+  .add(params, 'birdSpeed', 0, 3, 0.05)
+  .name('speed x')
+  .onChange((v: number) => {
+    if (scene.birds) scene.birds.speed = v;
+  });
+birdFolder.open();
 
 const viewFolder = debug.gui.addFolder('View');
 const viewCtrl = viewFolder
@@ -269,6 +376,13 @@ viewFolder
   .name('sea state')
   .onChange((v: SeaStateName) => scene.ocean.applySeaState(v));
 viewFolder.add(params, 'water').name('water').onChange((v: boolean) => scene.setWaterVisible(v));
+viewFolder.add(params, 'skirt').name('edge walls').onChange((v: boolean) => scene.setSkirtVisible(v));
+viewFolder
+  .add(params, 'skirtDepth', 0.5, 20, 0.5)
+  .name('edge wall depth (m)')
+  // Rebuilds a few hundred triangles, so it is safe to drag, but it re-runs the
+  // terrain height sampler along the perimeter — hence onFinishChange.
+  .onFinishChange((v: number) => scene.setSkirtDepth(v));
 viewFolder
   .add(params, 'depthExaggeration', 1, 60, 1)
   .name('sea depth x (1 = literal)')
@@ -349,7 +463,9 @@ engine.onFrame((ctx) => {
 // --- boot -------------------------------------------------------------------------------
 void (async () => {
   try {
-    await scene.load(params.seaState);
+    // `?town=0` picks the original four-tile island as well as skipping the
+    // buildings — see worldLayout in GrassWorldScene.
+    await scene.load(params.seaState, params.town);
   } catch (error) {
     console.error(error);
     say('failed to build the scene: ' + (error instanceof Error ? error.message : String(error)), true);
@@ -368,18 +484,57 @@ void (async () => {
     scene.field.stats.blades.toLocaleString() + ' blades',
   );
 
+  // The birds before the aircraft: 330 kB against 9.5 MB, so they are in the air
+  // while the Savoia is still parsing.
+  try {
+    if (!BIRD_URL) throw new Error('src/models/bird.fbx is missing — see src/models/README.md');
+    const birds = await scene.loadBirds(await BIRD_URL(), params.birdWingspan, params.birdFlap);
+    birds.speed = params.birdSpeed;
+    birds.setVisible(params.birds);
+    say('flock of ' + birds.flock.length + ' over the meadow, one flying alone');
+  } catch (error) {
+    console.error(error);
+    say('birds failed to load: ' + (error instanceof Error ? error.message : String(error)), true);
+  }
+
+  // The town. Fourteen third-party assets in three formats, two of them 17 MB
+  // apiece, loaded one at a time so the page fills in rather than freezing for the
+  // total. See Town.ts. Skipped entirely under `?town=0` — see the params block.
+  if (params.town) try {
+    say('loading the town …');
+    // Vite's glob hands back a loader per file, not a URL, so every URL is
+    // resolved up front and `loadTown` is given a plain synchronous lookup. It
+    // wants to ask for a name and get a string back, not to know that the bundler
+    // is involved at all.
+    const townUrls = new Map<string, string>();
+    for (const spec of [...TOWN_BUILDINGS, ...TOWN_LAMPS]) {
+      for (const kind of ['model', 'texture'] as const) {
+        const loader = townFile(spec.name, kind);
+        if (loader) townUrls.set(spec.name + '|' + kind, await loader());
+      }
+    }
+    const town = await scene.loadTown((name, kind) => townUrls.get(name + '|' + kind));
+    town.group.visible = params.town;
+    town.setScaleFigures(params.scaleFigures);
+    paintReport();
+    say(town.reports.length + ' buildings up, ' + town.frontage.toFixed(0) + ' m of frontage');
+  } catch (error) {
+    console.error(error);
+    say('the town failed to load: ' + (error instanceof Error ? error.message : String(error)), true);
+  }
+
   // The aircraft last: it is the smallest part of the scene and the slowest to
   // parse, and nothing else waits on it.
   try {
     if (!PLANE_URL) throw new Error('src/models/Porcorosso.fbx is missing — see src/models/README.md');
-    const report = await scene.stage.loadUrl(await PLANE_URL(), 'Porcorosso.fbx', {
-      // The same four scenery parts the bench's sidecar hides. Named here rather
-      // than read from the sidecar because this page loads exactly one asset and
-      // does not carry the bench's model-picking machinery.
-      hide: ['Plane', 'boards', 'barrels', 'COPY_cabin'],
-    });
+    // Straight from Porcorosso.parts.json, the same file the bench reads — this
+    // page used to carry its own copy of the hide list and it went stale the first
+    // time a part was added to one and not the other.
+    const report = await scene.stage.loadUrl(await PLANE_URL(), 'Porcorosso.fbx', sidecarFor('Porcorosso.fbx'));
     scene.stage.setMaterialMode(params.material);
     scene.stage.setAltitude(scene.waterLevel + params.planeAltitude);
+    params.propRpm = scene.stage.spinnerRpm;
+    propCtrl.updateDisplay();
     scene.reframe();
     say('loaded ' + report.name);
   } catch (error) {

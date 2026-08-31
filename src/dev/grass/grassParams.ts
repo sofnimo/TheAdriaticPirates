@@ -280,7 +280,12 @@ export const LIGHTING_DEFAULTS: LightingParams = {
   dirIntensity: 3,
   dirX: -55.0,
   dirY: 21.5,
-  dirZ: -11.5,
+  // POSITIVE, and that is the whole point: the sun sits on the seaward side, so it
+  // lights the faces that point at the water. Everything built here fronts that
+  // way — the town's facades, the beach, the side of the wood the establishing
+  // shot looks at — and at the vendored scene's original -11.5 the sun was behind
+  // all of it. A street lit from the back is a street of silhouettes.
+  dirZ: 42.0,
   lightDistance: 60,
   shadowMapSize: 4096,
   shadowCamSize: 9,

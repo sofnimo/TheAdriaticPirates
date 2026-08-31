@@ -270,6 +270,13 @@ export class ToonShading {
   private readonly swapped = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>();
   /** Materials this made, so a step change or a teardown can dispose them. */
   private readonly made: THREE.MeshToonMaterial[] = [];
+  /**
+   * Every subtree handed to `scan`. Kept so `setEnabled` covers all of them
+   * without each caller having to remember the list — the birds arrive minutes
+   * after the grass does, and a toggle that only knew about the last root scanned
+   * would silently leave them lit.
+   */
+  private readonly roots: THREE.Object3D[] = [];
 
   constructor(steps = TOON_DEFAULT_STEPS) {
     this.stepCount = steps;
@@ -289,6 +296,7 @@ export class ToonShading {
    * injection is tracked per material, and a swap already in place is left alone.
    */
   scan(root: THREE.Object3D): void {
+    if (!this.roots.includes(root)) this.roots.push(root);
     const seen = new Set<THREE.Material>();
     root.traverse((child) => {
       const mesh = child as THREE.Mesh;
@@ -303,16 +311,18 @@ export class ToonShading {
     });
   }
 
-  setEnabled(on: boolean, root: THREE.Object3D): void {
+  setEnabled(on: boolean): void {
     this.enabled = on;
     this.uniforms.uToon.value = on ? 1 : 0;
-    if (on) {
+    if (!on) {
+      this.restore();
+      return;
+    }
+    for (const root of this.roots) {
       root.traverse((child) => {
         const mesh = child as THREE.Mesh;
         if (mesh.isMesh) this.swapMesh(mesh);
       });
-    } else {
-      this.restore();
     }
   }
 
@@ -333,6 +343,7 @@ export class ToonShading {
 
   dispose(): void {
     this.restore();
+    this.roots.length = 0;
   }
 
   /**

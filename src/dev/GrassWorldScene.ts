@@ -7,7 +7,10 @@ import { DepthField } from '../world/depth/DepthField';
 import { Ocean } from '../world/ocean/Ocean';
 import type { SeaStateName } from '../art/seaStates';
 import { ModelStage } from './ModelStage';
+import { buildWorldSkirt } from './grass/worldSkirt';
 import { ToonShading, TOON_DEFAULT_STEPS } from './toonShading';
+import { Birds, BIRD_DEFAULT_FLAP_RATE } from './grass/Birds';
+import { Town, type TownEntry } from './grass/Town';
 
 /**
  * THE GRASS WORLD — the vendored stylized-grass scene, tiled out, with this
@@ -49,15 +52,158 @@ import { ToonShading, TOON_DEFAULT_STEPS } from './toonShading';
  * Nothing is actually tiled: the land is one generated heightfield of this area
  * and the water is one plane. See `GrassField` for what fills it.
  */
-const LAND_TILES_X = 4;
+const TILE = 14.788;
 const LAND_TILES_Z = 2;
-const WATER_TILES_X = 4;
 const WATER_TILES_Z = 1;
 
-export type GrassViewName = 'establishing' | 'shoreline' | 'lowpass' | 'aircraft' | 'canopy' | 'top' | 'free';
+/**
+ * TWO WORLDS, ONE SCENE.
+ *
+ * The island grew EASTWARD from four tiles to eighteen so the new ground could
+ * carry the town, and it grew eastward specifically so the wood, the meadow and
+ * the aircraft stayed exactly where they were framed — widening symmetrically
+ * would move both edges and drift everything already placed against the old
+ * bounds. Shifting the centre is what buys that.
+ *
+ * Without the town, all fourteen of those tiles are empty grass, and an
+ * establishing shot of a 268 m island with everything happening in its first 60 m
+ * is mostly a shot of nothing. So `?town=0` is not just the buildings switched
+ * off: it is the ORIGINAL four-tile island, on the origin, with no shelf levelled
+ * into it. Both layouts live here and the URL picks one.
+ */
+interface WorldLayout {
+  landTilesX: number;
+  centreX: number;
+  /** The levelled shelf the buildings stand on — absent when there is no town. */
+  flat: typeof TOWN_SHELF | undefined;
+}
+
+function worldLayout(withTown: boolean): WorldLayout {
+  const landTilesX = withTown ? 18 : 4;
+  return {
+    landTilesX,
+    // Four tiles puts this at 0, which is exactly where the island started.
+    centreX: ((landTilesX - 4) / 2) * TILE,
+    flat: withTown ? TOWN_SHELF : undefined,
+  };
+}
+
+/**
+ * THE MEADOW — the clearing on the left of frame, and the point the flock hangs
+ * over. One constant rather than two, because a flock circling over a wood while
+ * the clearing sits somewhere else is the exact bug this scene invites: the
+ * establishing camera looks down -z, so screen-left is -x, and the birds need the
+ * trees gone from the SAME patch they are flying above.
+ *
+ * `radius` is the hard core nothing is placed in; `GrassField` fringes out to
+ * 1.45x that, so the wood thins into it rather than stopping on a circle.
+ */
+const MEADOW = { x: -15, z: -2, radius: 11.5 } as const;
+
+/**
+ * THE TOWN SHELF — the levelled ground the buildings stand on, and the extra land
+ * the island grew to carry it.
+ *
+ * The island was four tiles wide and rolling everywhere. A street of fourteen
+ * buildings cannot stand on rolling ground: each one would sit at its own angle,
+ * or float at one corner. So the land grew eastward and the new ground is held
+ * dead level by `ProceduralTerrain`'s flat shelf, which eases the natural relief
+ * into it over `blend` metres — see `FlatRegion` for why that is a property of the
+ * height function rather than a slab laid on top.
+ *
+ * `height` is above sea level (which is -0.6), so 1.4 puts the street two metres
+ * clear of the water. Nothing is scattered on the shelf or its margin: no trees,
+ * no rocks, no blades. It is a town.
+ */
+const TOWN_SHELF = {
+  // Starts on a patch boundary (two tiles east of the origin) so the shelf's edge
+  // and the ground patches' edges are the same line.
+  minX: 29.58,
+  maxX: 240,
+  minZ: -20,
+  maxZ: 6,
+  height: 1.2,
+  blend: 7,
+} as const;
+
+/**
+ * Where the row starts, and the line the fronts stand on.
+ *
+ * `maxZ + blend` puts the shelf's outer ramp at z = 13, just inland of the
+ * waterline at 14.79 — so the town stands on level ground without the beach in
+ * front of it being lifted out of the sea.
+ */
+const TOWN_START_X = 36;
+const TOWN_FRONT_Z = 2;
+
+/**
+ * THE STREET, west to east, with every building's REAL height in metres.
+ *
+ * These heights are the only thing making fourteen unrelated exports agree — see
+ * the header of `Town.ts` for why scale has to be declared rather than imported.
+ *
+ * They are MEASURED, not guessed, and the thing they were measured against is the
+ * 1.8 m figure the panel can stand beside every building. The first pass here was
+ * guessed — 10 to 12 m, "three storeys and an attic" — and the figures said
+ * otherwise immediately: doors came out at 2.7 m against a real door's 2.0-2.1, so
+ * every house was about 1.35x too big. These are that pass divided through.
+ *
+ * To check one: turn on `1.8 m figures`, look at the door. A door should reach a
+ * little over the figure's head; a storey about three-quarters again. Edit a
+ * number here and that building resizes — the row re-flows off the measured
+ * widths, so nothing else needs touching.
+ */
+export const TOWN_BUILDINGS: readonly Omit<TownEntry, 'url' | 'textureUrl'>[] = [
+  { name: 'nivelles1', format: 'fbx', height: 8.2 },
+  { name: 'nivelles2', format: 'fbx', height: 7.8 },
+  { name: 'lemans', format: 'fbx', height: 8.6 },
+  { name: 'nivelles4', format: 'fbx', height: 8.0 },
+  { name: 'tramain', format: 'fbx', height: 7.7 },
+  // Y-up, despite appearances. It was briefly declared Z-up on the strength of it
+  // LOOKING tipped over, and that is what actually tipped it over — its facade
+  // went flat and its wings stood up as towers with the window rows running
+  // horizontally between them. Measured, its downward-facing area is 1.7% of the
+  // total, which is a footprint and nothing else: Y is up. What was really wrong
+  // was its facing, and `faceStreet` handles that now.
+  //
+  // Much taller than its neighbours because it genuinely is: five storeys of
+  // windows on its texture to their two.
+  { name: 'german135', format: 'fbx', height: 14.0 },
+  { name: 'nivelles6', format: 'fbx', height: 8.4 },
+  // Z-up: its bounding box arrives 6.3 x 2.6 x 6.3, which is a townhouse lying on
+  // its back. Uncorrected, fitting THAT to height gives a 28 m-wide pancake.
+  { name: 'harlingsches', format: 'obj', height: 9.0, upAxis: 'z' },
+  { name: 'nivelles9', format: 'fbx', height: 8.0 },
+  { name: 'medieval', format: 'dae', height: 7.2 },
+  // A station building with a tower, not a shed — at 7 m it came out 4.7 m wide
+  // and read as a shed someone had left in the gap.
+  { name: 'depot', format: 'obj', height: 11.0, gapAfter: 4 },
+  { name: 'clocktower', format: 'obj', height: 15.0 },
+];
+
+/**
+ * The lamp row, as a repeating pattern rather than a set: `Town.lampsAlong` walks
+ * this list and wraps, so listing the plain lamp three times to the Victorian one's
+ * once puts a Victorian lamp at every fourth post.
+ *
+ * That ratio is a budget, not a taste. `streetlamp.fbx` is 7.8k triangles;
+ * `victorianlamp.dae` is 64.6k — eight of THOSE down the street would cost more
+ * than every building on it put together.
+ */
+export const TOWN_LAMPS: readonly Omit<TownEntry, 'url' | 'textureUrl'>[] = [
+  { name: 'streetlamp', format: 'fbx', height: 4.2 },
+  { name: 'streetlamp', format: 'fbx', height: 4.2 },
+  { name: 'streetlamp', format: 'fbx', height: 4.2 },
+  // Z-up. Left as authored it arrives 5.1 x 4.2 x 7.7 — deeper than it is tall,
+  // which is a lamp post lying down. Upright it is a 2.8 m spread of arms on a
+  // 4.2 m column, which is what a Victorian lamp actually is.
+  { name: 'victorianlamp', format: 'dae', height: 4.0, upAxis: 'z' },
+];
+
+export type GrassViewName = 'establishing' | 'shoreline' | 'lowpass' | 'aircraft' | 'canopy' | 'town' | 'top' | 'free';
 
 export const GRASS_VIEW_NAMES: ReadonlyArray<GrassViewName> = Object.freeze([
-  'establishing', 'shoreline', 'lowpass', 'aircraft', 'canopy', 'top', 'free',
+  'establishing', 'shoreline', 'lowpass', 'aircraft', 'canopy', 'town', 'top', 'free',
 ]);
 
 interface ViewSpec {
@@ -84,9 +230,18 @@ export class GrassWorldScene {
   readonly toon = new ToonShading(TOON_DEFAULT_STEPS);
 
   field!: GrassField;
+  /** Null until the FBX lands, and null for good if it is not in the tree. */
+  birds: Birds | null = null;
+  /** Null until the buildings land, and null for good if they are not in the tree. */
+  town: Town | null = null;
+  /** Panel-driven; held here so it survives a load that has not happened yet. */
+  scaleFigures = false;
   ocean!: Ocean;
   depthField!: DepthField;
   water!: THREE.Mesh;
+  /** The wall around the world's outer edge. See grass/worldSkirt.ts. */
+  skirt: THREE.Mesh | null = null;
+  skirtDepth = 4;
   stage!: ModelStage;
 
   /** World-space footprint of the water strip. */
@@ -99,6 +254,13 @@ export class GrassWorldScene {
    * establishing camera into the aircraft.
    */
   readonly landBounds = new THREE.Box3();
+  /**
+   * The original four tiles — the wood, the meadow and the beach the aircraft sits
+   * off. Every framing but `town` is aimed at this rather than at `landBounds`,
+   * which now runs a hundred and fifty metres further east than anything worth
+   * looking at from the establishing shot.
+   */
+  readonly islandBounds = new THREE.Box3();
   /** Sea level, in world units. Set from the grass tile's own ground height. */
   waterLevel = 0;
   /** See `setDepthExaggeration`. */
@@ -154,17 +316,18 @@ export class GrassWorldScene {
    * Builds everything that needs an async load: the grass GLB and its textures,
    * then the sea that shelves against it, then the model stage.
    */
-  async load(seaState: SeaStateName = 'breeze'): Promise<void> {
+  async load(seaState: SeaStateName = 'breeze', withTown = true): Promise<void> {
     // A tile of area, measured off the GLB's own ground quad so "eight tiles"
     // means the same thing it did before the field became procedural.
-    const TILE = 14.788;
-    const landWidth = TILE * LAND_TILES_X;
+    const layout = worldLayout(withTown);
+    const landWidth = TILE * layout.landTilesX;
     const landDepth = TILE * LAND_TILES_Z;
-    const waterWidth = TILE * WATER_TILES_X;
+    // The sea always spans the land it shelves against, however wide that is.
+    const waterWidth = landWidth;
     const waterDepth = TILE * WATER_TILES_Z;
 
-    // Land centred on the origin; the sea on the +z side of it. `shoreZ` is the
-    // WATERLINE — the ground is built to pass through sea level exactly there and
+    // Land running EAST from its old western edge; the sea on the +z side of it.
+    // `shoreZ` is the WATERLINE — the ground is built to pass through sea level exactly there and
     // keep descending past it, so the beach goes under the water instead of ending
     // at a wall. See ProceduralTerrain.heightAt.
     const shoreZ = landDepth / 2;
@@ -173,15 +336,22 @@ export class GrassWorldScene {
     this.field = await GrassField.load(this.scene, {
       width: landWidth,
       depth: landDepth,
-      patchesX: LAND_TILES_X,
+      centreX: layout.centreX,
+      patchesX: layout.landTilesX,
       patchesZ: LAND_TILES_Z,
       shoreZ,
       waterLevel: this.waterLevel,
       submergedRun: 9,
       // One meadow, off to the west — grass, flowers and nothing else standing in
       // it, so there is somewhere in the field the eye can rest and somewhere an
-      // aircraft could plausibly come down.
-      clearing: { x: -14, z: -2, radius: 9.5 },
+      // aircraft could plausibly come down. Widened from 9.5 m when the birds
+      // arrived: the flock needs the trees gone from the patch it circles over.
+      clearing: { x: MEADOW.x, z: MEADOW.z, radius: MEADOW.radius },
+      // The levelled ground the town stands on. Trees, rocks and blades are all
+      // kept off it and off its ramp — see GrassField's `onShelf`. Omitted rather
+      // than passed as undefined: `exactOptionalPropertyTypes` treats those as
+      // different, and with no town there is no shelf to level.
+      ...(layout.flat ? { flat: layout.flat } : {}),
       seed: 20260830,
       // Upstream's 300/unit² capped at 53k covers ONE 14.8 m tile. Eight tiles of
       // that is ~420k blades, which is a slideshow before anything else draws. The
@@ -203,12 +373,20 @@ export class GrassWorldScene {
     // plane's landward edge is buried under sand that is above it.
     const waterOverlap = 3;
     this.waterBounds.set(
-      new THREE.Vector3(-waterWidth / 2, this.waterLevel, shoreZ - waterOverlap),
-      new THREE.Vector3(waterWidth / 2, this.waterLevel, shoreZ - waterOverlap + waterDepth),
+      new THREE.Vector3(layout.centreX - waterWidth / 2, this.waterLevel, shoreZ - waterOverlap),
+      new THREE.Vector3(layout.centreX + waterWidth / 2, this.waterLevel, shoreZ - waterOverlap + waterDepth),
     );
     this.landBounds.set(
-      new THREE.Vector3(-landWidth / 2, this.waterLevel, -landDepth / 2),
-      new THREE.Vector3(landWidth / 2, 8, shoreZ),
+      new THREE.Vector3(layout.centreX - landWidth / 2, this.waterLevel, -landDepth / 2),
+      new THREE.Vector3(layout.centreX + landWidth / 2, 8, shoreZ),
+    );
+    // The ORIGINAL four tiles, which is what every framing except `town` is aimed
+    // at. Growing the island eastward must not re-aim the establishing shot at a
+    // stretch of empty ground halfway to the town.
+    const westEdge = layout.centreX - landWidth / 2;
+    this.islandBounds.set(
+      new THREE.Vector3(westEdge, this.waterLevel, -landDepth / 2),
+      new THREE.Vector3(westEdge + 4 * TILE, 8, shoreZ),
     );
     const waterSize = this.waterBounds.getSize(new THREE.Vector3());
     const waterCentre = this.waterBounds.getCenter(new THREE.Vector3());
@@ -243,6 +421,8 @@ export class GrassWorldScene {
     this.water.receiveShadow = false;
     this.scene.add(this.water);
 
+    this.rebuildSkirt();
+
     // ── The aircraft ─────────────────────────────────────────────────────────
     // On the water, in the middle of the strip. A flying boat belongs on its floats.
     this.stage = new ModelStage(this.scene, {
@@ -256,6 +436,63 @@ export class GrassWorldScene {
 
     this.frameShadowCamera();
     this.setView('establishing');
+  }
+
+  /**
+   * (Re)build the wall around the world's outer edge.
+   *
+   * The land and the sea overlap but span the same x, so their union is a
+   * rectangle and one skirt wraps both. `topAt` picks whichever surface is higher
+   * at each point, which is what makes the join disappear along the seaward flank
+   * where the sea covers the drowned end of the beach.
+   */
+  rebuildSkirt(): void {
+    if (this.skirt) {
+      this.skirt.removeFromParent();
+      this.skirt.geometry.dispose();
+      (this.skirt.material as THREE.Material).dispose();
+      this.skirt = null;
+    }
+
+    const terrain = this.field.terrain.bounds;
+    const water = this.waterBounds;
+    const level = this.waterLevel;
+    const inside = (box: THREE.Box3, x: number, z: number): boolean =>
+      x >= box.min.x - 1e-3 && x <= box.max.x + 1e-3 && z >= box.min.z - 1e-3 && z <= box.max.z + 1e-3;
+
+    const seaWins = (x: number, z: number): boolean => {
+      if (!inside(water, x, z)) return false;
+      return !inside(terrain, x, z) || this.field.terrain.heightAt(x, z) < level;
+    };
+
+    this.skirt = buildWorldSkirt({
+      minX: Math.min(terrain.min.x, water.min.x),
+      maxX: Math.max(terrain.max.x, water.max.x),
+      minZ: Math.min(terrain.min.z, water.min.z),
+      maxZ: Math.max(terrain.max.z, water.max.z),
+      depth: this.skirtDepth,
+      topAt: (x, z) => {
+        const land = inside(terrain, x, z) ? this.field.terrain.heightAt(x, z) : -Infinity;
+        const sea = inside(water, x, z) ? level : -Infinity;
+        return Math.max(land, sea);
+      },
+      isWater: seaWins,
+      // Taken from the grass field's own dirt colour and darkened, so the cut face
+      // reads as the same soil the ground is painting. Sampled at build time — it
+      // does not re-tint when the season preset changes the dirt.
+      earthColor: new THREE.Color(this.field.params.grDirtColor).multiplyScalar(0.55),
+      seabedColor: new THREE.Color(0x123b4a),
+    });
+    this.scene.add(this.skirt);
+  }
+
+  setSkirtDepth(metres: number): void {
+    this.skirtDepth = metres;
+    this.rebuildSkirt();
+  }
+
+  setSkirtVisible(v: boolean): void {
+    if (this.skirt) this.skirt.visible = v;
   }
 
   /**
@@ -412,7 +649,7 @@ export class GrassWorldScene {
   }
 
   private viewSpec(name: GrassViewName): ViewSpec {
-    const b = this.landBounds;
+    const b = this.islandBounds;
     const centre = b.getCenter(new THREE.Vector3());
     const size = b.getSize(new THREE.Vector3());
     const plane = this.stage.model
@@ -451,6 +688,27 @@ export class GrassWorldScene {
           position: new THREE.Vector3(centre.x + 8, size.y * 0.8, centre.z + 12),
           target: new THREE.Vector3(centre.x, size.y * 0.55, centre.z),
         };
+      case 'town': {
+        // Under `?town=0` there is no street AND no ground east of the island to
+        // aim at, so this framing would point the camera at open sea. Fall through
+        // to the establishing shot rather than showing an empty ocean and letting
+        // it read as a broken view.
+        if (!this.town) return this.viewSpec('establishing');
+        // Down the street at a slight angle rather than square on, so the row
+        // reads as depth instead of as a flat elevation drawing. Framed off what
+        // actually loaded, so a building that failed does not leave the camera
+        // aimed at a gap.
+        const street = this.town?.group;
+        const box = street ? new THREE.Box3().setFromObject(street) : null;
+        const mid = box && !box.isEmpty()
+          ? box.getCenter(new THREE.Vector3())
+          : new THREE.Vector3(TOWN_START_X + 60, TOWN_SHELF.height + 6, TOWN_FRONT_Z);
+        const run = box && !box.isEmpty() ? box.getSize(new THREE.Vector3()).x : 120;
+        return {
+          position: new THREE.Vector3(mid.x - run * 0.42, TOWN_SHELF.height + 15, TOWN_FRONT_Z + 44),
+          target: new THREE.Vector3(mid.x + run * 0.1, TOWN_SHELF.height + 4, TOWN_FRONT_Z - 4),
+        };
+      }
       case 'top':
         return {
           position: new THREE.Vector3(centre.x, Math.max(size.x, size.z) * 1.1, centre.z + 0.01),
@@ -508,6 +766,7 @@ export class GrassWorldScene {
 
     this.sky.update(this.camera, this.time);
     this.field?.update(dt, this.scene);
+    this.birds?.update(dt);
     this.stage?.update(dt);
     this.ocean?.update(this.camera, this.time);
 
@@ -520,6 +779,92 @@ export class GrassWorldScene {
   }
 
   /**
+   * Put the birds in the sky over the meadow.
+   *
+   * Separate from `load` and allowed to fail on its own, like the aircraft: the
+   * FBX is gitignored (see src/models/README.md), so on a fresh clone this is the
+   * one thing in the scene that is legitimately absent, and the island should
+   * still come up without it.
+   */
+  async loadBirds(url: string, wingspan = 1.3, flapRate = BIRD_DEFAULT_FLAP_RATE): Promise<Birds> {
+    const centre = new THREE.Vector3(MEADOW.x, 0, MEADOW.z);
+    this.birds = await Birds.load(this.scene, url, {
+      centre,
+      // The loner's circuit is centred on the island rather than on the meadow,
+      // so it crosses the whole frame instead of orbiting the flock it left.
+      lonerCentre: new THREE.Vector3(MEADOW.x * 0.35, 0, 0),
+      wingspan,
+      flapRate,
+      // Height is measured from the terrain under each bird, not from sea level,
+      // so a bird over the ridge does not clip through it.
+      groundAt: (x, z) => this.field?.heightAt(x, z) ?? 0,
+    });
+    // Birds arriving after the toggle was thrown still have to obey it.
+    this.toon.scan(this.birds.group);
+    this.setToonShading(this.toon.on);
+    return this.birds;
+  }
+
+  /**
+   * Build the street on the shelf.
+   *
+   * `resolve` turns a manifest name into a URL, because the manifest lives here
+   * but the files are reached through the bundler's own glob in the entry point —
+   * this module has no business knowing how `src/models/town/` is served.
+   *
+   * Fails softly, one building at a time: these are fourteen third-party assets
+   * that are gitignored like everything else in `src/models/`, and a missing file
+   * should cost you that building, not the island.
+   */
+  async loadTown(
+    resolve: (name: string, kind: 'model' | 'texture') => string | undefined,
+  ): Promise<Town> {
+    const entries: TownEntry[] = [];
+    for (const spec of TOWN_BUILDINGS) {
+      const url = resolve(spec.name, 'model');
+      if (!url) {
+        console.warn(`[GrassWorldScene] town: ${spec.name} not found in src/models/town/`);
+        continue;
+      }
+      entries.push({ ...spec, url, ...(resolve(spec.name, 'texture') ? { textureUrl: resolve(spec.name, 'texture')! } : {}) });
+    }
+
+    const lamps: TownEntry[] = [];
+    for (const spec of TOWN_LAMPS) {
+      const url = resolve(spec.name, 'model');
+      if (!url) continue;
+      const textureUrl = resolve(spec.name, 'texture');
+      lamps.push({ ...spec, url, ...(textureUrl ? { textureUrl } : {}) });
+    }
+
+    this.town = await Town.load(this.scene, entries, {
+      startX: TOWN_START_X,
+      frontZ: TOWN_FRONT_Z,
+      groundAt: (x, z) => this.field?.heightAt(x, z) ?? TOWN_SHELF.height,
+      spacing: 0.5,
+      lamps,
+      lampSpacing: 16,
+      lampOffsetZ: 3.5,
+      scaleFigures: this.scaleFigures,
+    });
+
+    // Buildings arriving after the toggle was thrown still have to obey it.
+    this.toon.scan(this.town.group);
+    this.setToonShading(this.toon.on);
+    // The street is a new set of static casters well outside the frozen map's old
+    // footprint, so the map has to be re-taken now that they are standing.
+    this.frameShadowCamera();
+    this.bakeShadows();
+    return this.town;
+  }
+
+  /** Show or hide the 1.8 m figures standing beside each building. */
+  setScaleFigures(on: boolean): void {
+    this.scaleFigures = on;
+    this.town?.setScaleFigures(on);
+  }
+
+  /**
    * Toon shading on or off, for the grass world AND the aircraft in one call.
    *
    * The sea and the sky are deliberately left out. Neither reads a light at all —
@@ -529,7 +874,7 @@ export class GrassWorldScene {
    * two art-directed palettes, which is a different job from this switch.
    */
   setToonShading(on: boolean): void {
-    if (this.field) this.toon.setEnabled(on, this.field.group);
+    this.toon.setEnabled(on);
     this.stage?.setToonOverride(on, this.toon.steps);
   }
 
@@ -542,6 +887,8 @@ export class GrassWorldScene {
   dispose(): void {
     this.controls.dispose();
     this.toon.dispose();
+    this.birds?.dispose();
+    this.town?.dispose();
     this.field?.dispose();
     this.stage?.dispose();
     this.sky.dispose();

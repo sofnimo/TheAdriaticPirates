@@ -148,9 +148,28 @@ function stripRigging(root: THREE.Object3D, warnings: string[]): void {
  * cabin off to one side — and all of it is geometry, so all of it lands in the bounding box
  * and walks off with the auto-fit. Applying the list BEFORE the fit rather than after is
  * what stops the model visibly jumping a moment after it appears.
+ *
+ * `spin` names parts that turn: a propeller, a rotor, a wheel. See `buildSpinners`.
  */
 export interface ModelLoadOptions {
   hide?: readonly string[];
+  spin?: readonly SpinnerSpec[];
+}
+
+/** One rotating assembly, named in the asset's `.parts.json`. */
+export interface SpinnerSpec {
+  /** Top-level part names that turn together. The first is the one measured. */
+  parts: readonly string[];
+  /** Shaft axis. Auto-detected from the assembly's thinnest dimension when omitted. */
+  axis?: 'x' | 'y' | 'z';
+  /** Revolutions per minute at full throttle. */
+  rpm?: number;
+}
+
+interface Spinner {
+  pivot: THREE.Group;
+  axis: 'x' | 'y' | 'z';
+  rpm: number;
 }
 
 /**
@@ -310,6 +329,10 @@ export class ModelStage {
   clips: THREE.AnimationClip[] = [];
   /** Top-level nodes of the asset, so a display base or pedestal can be switched off. */
   parts: ModelPart[] = [];
+  /** Rotating assemblies built from the sidecar's `spin` list. */
+  spinners: Spinner[] = [];
+  /** Global multiplier on every spinner's authored rpm. 0 stops them. */
+  spinThrottle = 1;
   private playing: THREE.AnimationAction | null = null;
   private altitude = 0;
   private yaw = 0;
@@ -489,6 +512,8 @@ export class ModelStage {
       warnings.push('hid ' + hidden + ' scenery part(s) per the .parts.json sidecar');
     }
 
+    this.buildSpinners(options.spin ?? [], warnings);
+
     const nativeSize = new THREE.Vector3();
     this.applyFit(nativeSize);
 
@@ -570,6 +595,7 @@ export class ModelStage {
     this.playing = null;
     this.clips = [];
     this.parts = [];
+    this.spinners = [];
     this.report = null;
     for (const url of this.objectUrls) URL.revokeObjectURL(url);
     this.objectUrls = [];
@@ -642,6 +668,92 @@ export class ModelStage {
       this.gouacheMaterials.push(gouache);
       mesh.material = gouache;
     }
+  }
+
+  /**
+   * Reparent each spinning assembly under a pivot at its own axis.
+   *
+   * The parts arrive as siblings under the model root with their transforms baked
+   * relative to it, so rotating one in place turns it about the MODEL's origin —
+   * a propeller that swings round the tail rather than spinning on its shaft. The
+   * fix is a pivot node sitting on the axis, with the parts moved under it.
+   *
+   * The shaft is the assembly's THINNEST dimension, which is what a disc is: a
+   * two-blade propeller measures 10 x 176 x 233 model units, so the 10 is the
+   * shaft. Auto-detecting it beats naming it in the sidecar, because it is a fact
+   * about the geometry that cannot be got wrong by hand.
+   *
+   * Bounds are measured in MODEL space, not world: the stage sits under a yaw
+   * pivot and an altitude offset, and a world-space box would fold both into the
+   * pivot position and put the propeller's centre of rotation somewhere out in the
+   * sea.
+   */
+  private buildSpinners(specs: readonly SpinnerSpec[], warnings: string[]): void {
+    const model = this.model;
+    if (!model || specs.length === 0) return;
+    model.updateMatrixWorld(true);
+    const toModel = new THREE.Matrix4().copy(model.matrixWorld).invert();
+
+    for (const spec of specs) {
+      const parts = spec.parts
+        .map((name) => this.parts.find((p) => p.name === name))
+        .filter((p): p is ModelPart => p !== undefined);
+
+      if (parts.length === 0) {
+        warnings.push('sidecar spins [' + spec.parts.join(', ') + '], which this asset has no part named');
+        continue;
+      }
+
+      const box = new THREE.Box3();
+      const scratch = new THREE.Matrix4();
+      for (const part of parts) {
+        part.object.traverse((child) => {
+          const mesh = child as THREE.Mesh;
+          if (!mesh.isMesh || !mesh.geometry) return;
+          if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+          const bb = mesh.geometry.boundingBox;
+          if (!bb) return;
+          scratch.multiplyMatrices(toModel, mesh.matrixWorld);
+          box.union(bb.clone().applyMatrix4(scratch));
+        });
+      }
+      if (box.isEmpty()) continue;
+
+      const size = box.getSize(new THREE.Vector3());
+      const centre = box.getCenter(new THREE.Vector3());
+      const axis: 'x' | 'y' | 'z' =
+        spec.axis ?? (size.x <= size.y && size.x <= size.z ? 'x' : size.y <= size.z ? 'y' : 'z');
+
+      const pivot = new THREE.Group();
+      pivot.name = 'spinner:' + parts[0]!.name;
+      pivot.position.copy(centre);
+      model.add(pivot);
+      for (const part of parts) {
+        // The pivot carries no rotation or scale, so re-parenting is a translation:
+        // subtract its offset and `add` moves the node off its old parent.
+        part.object.position.sub(centre);
+        pivot.add(part.object);
+      }
+
+      this.spinners.push({ pivot, axis, rpm: spec.rpm ?? 240 });
+    }
+
+    if (this.spinners.length > 0) {
+      warnings.push(
+        this.spinners.length + ' spinning assembly(s): ' +
+        this.spinners.map((s) => s.pivot.name.replace('spinner:', '') + ' about ' + s.axis).join(', '),
+      );
+    }
+  }
+
+  /** Scale every spinner's authored rpm. 0 stops them where they are. */
+  setSpinThrottle(v: number): void {
+    this.spinThrottle = v;
+  }
+
+  /** Authored rpm of the first spinner, for seeding a panel control. */
+  get spinnerRpm(): number {
+    return this.spinners[0]?.rpm ?? 0;
   }
 
   /**
@@ -767,6 +879,14 @@ export class ModelStage {
 
   update(dt: number): void {
     this.mixer?.update(dt);
+
+    if (this.spinThrottle !== 0) {
+      for (const spinner of this.spinners) {
+        // rpm -> radians per second.
+        spinner.pivot.rotation[spinner.axis] +=
+          spinner.rpm * this.spinThrottle * (Math.PI / 30) * dt;
+      }
+    }
     if (this.spin !== 0) {
       this.turntable = (this.turntable + this.spin * dt) % 360;
       this.pivot.rotation.y = THREE.MathUtils.degToRad(this.yaw + this.turntable);

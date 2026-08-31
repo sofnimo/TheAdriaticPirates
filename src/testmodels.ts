@@ -13,8 +13,8 @@ import {
   MATERIAL_MODES,
   formatModelReport,
   type MaterialMode,
-  type ModelLoadOptions,
 } from './dev/ModelStage';
+import { sidecarFor } from './dev/modelSidecar';
 import { PostChain } from './render/post/PostChain';
 import { POST } from './art/post';
 import { TIME_OF_DAY_NAMES, type TimeOfDayName } from './art/timeOfDay';
@@ -51,7 +51,7 @@ const query = new URLSearchParams(window.location.search);
  * so an unresolvable one is a build error instead of a 404 at the moment you wanted to
  * look at it. Non-eager: a folder of assets should not all download on boot.
  */
-const MODEL_MODULES = import.meta.glob('./models/*.{glb,gltf,fbx,obj}', {
+const MODEL_MODULES = import.meta.glob('./models/{*,town/*}.{glb,gltf,fbx,obj,dae}', {
   query: '?url',
   import: 'default',
 }) as Record<string, () => Promise<string>>;
@@ -59,33 +59,6 @@ const MODEL_MODULES = import.meta.glob('./models/*.{glb,gltf,fbx,obj}', {
 const MODEL_FILES = Object.keys(MODEL_MODULES)
   .map((path) => ({ path, name: path.slice(path.lastIndexOf('/') + 1) }))
   .sort((a, b) => a.name.localeCompare(b.name));
-
-/**
- * Per-asset sidecars: `Foo.fbx` is configured by `Foo.parts.json` sitting beside it.
- *
- * Eager, because these are a few hundred bytes each and the hide list has to be in hand
- * BEFORE the model is fitted — fetching it afterwards means the asset visibly resizes a
- * moment after it lands.
- *
- * A sidecar rather than a hardcoded table because the fact it records — "this asset ships a
- * diorama and only these parts are the subject" — belongs to the asset, not to the bench.
- * The next model will bundle a different showroom.
- */
-interface PartsSidecar {
-  hide?: string[];
-  note?: string;
-}
-
-const SIDECARS = import.meta.glob('./models/*.parts.json', { eager: true, import: 'default' }) as Record<
-  string,
-  PartsSidecar
->;
-
-/** `./models/Porcorosso.fbx` -> the contents of `./models/Porcorosso.parts.json`, if any. */
-function sidecarFor(modelPath: string): ModelLoadOptions {
-  const sidecar = SIDECARS[modelPath.replace(/\.[^./]+$/, '.parts.json')];
-  return sidecar?.hide ? { hide: sidecar.hide } : {};
-}
 
 const engine = new Engine({ canvas });
 const debug = new DebugUI(document.body, 'Adriatic — model bench');
@@ -167,7 +140,7 @@ async function loadFromFiles(files: readonly File[]): Promise<void> {
     // A dropped file gets the sidecar of the same name if this repo happens to carry one,
     // so dragging in a fresh copy of a known asset behaves like picking it from the list.
     const root = files.find((f) => /\.(glb|gltf|fbx|obj)$/i.test(f.name));
-    const report = await scene.stage.loadFiles(files, root ? sidecarFor('./models/' + root.name) : {});
+    const report = await scene.stage.loadFiles(files, root ? sidecarFor(root.name) : {});
     say('loaded ' + report.name);
   });
 }
@@ -256,6 +229,7 @@ const params = {
   altitude: 0,
   yaw: 0,
   spin: 0,
+  propRpm: 0,
   wireframe: false,
   shadows: true,
   tameGloss: true,
@@ -345,6 +319,16 @@ fitFolder
   .add(params, 'yaw', -180, 180, 1)
   .name('yaw (deg)')
   .onChange((v: number) => scene.stage.setYaw(v));
+// Only meaningful for an asset whose sidecar declares a `spin` assembly; hidden
+// otherwise, since a slider that drives nothing is worse than no slider.
+const propCtrl = fitFolder
+  .add(params, 'propRpm', 0, 1800, 10)
+  .name('spinning parts (rpm)')
+  .onChange((v: number) => {
+    const authored = scene.stage.spinnerRpm;
+    scene.stage.setSpinThrottle(authored > 0 ? v / authored : 0);
+  });
+propCtrl.hide();
 fitFolder
   .add(params, 'spin', 0, 90, 1)
   .name('turntable (deg/s)')
@@ -490,6 +474,14 @@ function syncClipController(): void {
 function syncStageControllers(): void {
   const report = scene.stage.report;
   if (!report) return;
+  if (scene.stage.spinners.length > 0) {
+    params.propRpm = scene.stage.spinnerRpm;
+    scene.stage.setSpinThrottle(1);
+    propCtrl.show();
+  } else {
+    propCtrl.hide();
+  }
+  propCtrl.updateDisplay();
   params.autoFit = scene.stage.autoFit;
   params.targetSize = scene.stage.targetSize;
   params.scale = scene.stage.scaleMultiplier;

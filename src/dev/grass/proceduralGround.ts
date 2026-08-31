@@ -147,6 +147,32 @@ export interface TerrainOptions {
   submergedRun?: number;
   submergedDrop?: number;
   seed?: number;
+  /** A levelled shelf cut into the relief. See `FlatRegion`. */
+  flat?: FlatRegion | undefined;
+}
+
+/**
+ * A rectangle of the world held at one height, for anything that cannot stand on
+ * rolling ground — a town, a road, a strip.
+ *
+ * `blend` is the margin OUTSIDE the rectangle over which the natural relief eases
+ * into that height, and it is the whole reason this lives in `heightAt` rather
+ * than being a separate flat mesh dropped on top. Every consumer of the terrain
+ * reads one function: the ground geometry, the prop scatter, the birds' altitude,
+ * anything placed later. Level the function and they all agree. Lay a slab over
+ * the top instead and each of them has to be told about it separately — and the
+ * ground mesh, which is built from `heightAt`, would still ramp straight through
+ * the slab and out the other side.
+ */
+export interface FlatRegion {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  /** The level it holds, in world Y. */
+  height: number;
+  /** Metres of easing outside the rectangle. 0 gives a cliff edge. */
+  blend: number;
 }
 
 export interface TerrainPatch {
@@ -158,6 +184,7 @@ export interface TerrainPatch {
 
 export class ProceduralTerrain {
   readonly bounds = new THREE.Box3();
+  private readonly flat: FlatRegion | undefined;
   readonly patches: TerrainPatch[] = [];
 
   private readonly relief: number;
@@ -178,6 +205,7 @@ export class ProceduralTerrain {
     this.reliefScale = options.reliefScale ?? 0.045;
     this.shoreZ = options.shoreZ ?? centreZ + options.depth / 2;
     this.shoreFalloff = options.shoreFalloff ?? 7;
+    this.flat = options.flat;
     this.waterLevel = options.waterLevel ?? -0.6;
     this.submergedRun = options.submergedRun ?? 9;
     this.submergedDrop = options.submergedDrop ?? 2.2;
@@ -230,12 +258,32 @@ export class ProceduralTerrain {
     const n2 = gmFbm((x + this.offsetX) * this.reliefScale * 3.7, (z + this.offsetZ) * this.reliefScale * 3.7);
     const relief = (n - 0.5) * this.relief + (n2 - 0.5) * this.relief * 0.35;
 
-    if (z <= this.shoreZ) {
-      const t = smoothstep01((z - (this.shoreZ - this.shoreFalloff)) / this.shoreFalloff);
-      return relief * (1 - t) + this.waterLevel * t;
-    }
-    const t = smoothstep01((z - this.shoreZ) / this.submergedRun);
-    return this.waterLevel - this.submergedDrop * t;
+    const natural = z <= this.shoreZ
+      ? relief * (1 - smoothstep01((z - (this.shoreZ - this.shoreFalloff)) / this.shoreFalloff)) +
+        this.waterLevel * smoothstep01((z - (this.shoreZ - this.shoreFalloff)) / this.shoreFalloff)
+      : this.waterLevel - this.submergedDrop * smoothstep01((z - this.shoreZ) / this.submergedRun);
+
+    // The shelf goes on LAST, over the beach ramp as well as over the relief: a
+    // levelled town that the shore ramp still tilted would not be level.
+    const shelf = this.flatness(x, z);
+    return shelf > 0 ? natural * (1 - shelf) + this.flat!.height * shelf : natural;
+  }
+
+  /**
+   * How levelled this point is, 0 outside the shelf and its margin, 1 inside.
+   *
+   * The two axes are eased independently and multiplied, which rounds the corners
+   * of the margin — the alternative, easing on distance-to-rectangle, gives a
+   * perfectly square ramp whose corners read as bevelled masonry rather than as
+   * ground.
+   */
+  private flatness(x: number, z: number): number {
+    const f = this.flat;
+    if (!f) return 0;
+    const blend = Math.max(f.blend, 0.001);
+    const ax = smoothstep01((x - (f.minX - blend)) / blend) * (1 - smoothstep01((x - f.maxX) / blend));
+    const az = smoothstep01((z - (f.minZ - blend)) / blend) * (1 - smoothstep01((z - f.maxZ) / blend));
+    return ax * az;
   }
 
   /** Surface normal, by central differences. Used to keep props off steep ground. */

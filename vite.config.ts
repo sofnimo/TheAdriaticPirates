@@ -103,7 +103,7 @@ export default defineConfig({
   ],
   // Model files dropped into src/models/ are assets, not modules — the bench globs them
   // as URLs and hands them to GLTFLoader.
-  assetsInclude: ['**/*.glb', '**/*.gltf', '**/*.bin', '**/*.fbx', '**/*.obj', '**/*.mtl', '**/*.hdr'],
+  assetsInclude: ['**/*.glb', '**/*.gltf', '**/*.bin', '**/*.fbx', '**/*.obj', '**/*.mtl', '**/*.dae', '**/*.hdr'],
   server: { open: true },
   build: {
     target: 'es2022',

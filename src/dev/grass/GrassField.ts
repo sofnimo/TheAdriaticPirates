@@ -8,7 +8,7 @@ import { makeBarkMaterial } from '../../vendor/grassField/materials/barkMaterial
 import { scatterBlades, scatterFlowers } from '../../vendor/grassField/utils/scatter';
 import { GRASS_PRESETS } from '../../vendor/grassField/presets';
 import { GRASS_DEFAULTS, FLOWER_DEFAULTS, type GrassParams, type FlowerParams } from './grassParams';
-import { ProceduralTerrain, scatterPoints, seededRandom, groundDirt, type DirtSettings } from './proceduralGround';
+import { ProceduralTerrain, scatterPoints, seededRandom, groundDirt, type DirtSettings, type FlatRegion } from './proceduralGround';
 
 /**
  * THE GRASS FIELD, GENERATED.
@@ -67,6 +67,8 @@ export interface GrassFieldOptions {
   submergedRun?: number;
   /** A meadow: no trees, no rocks. World XZ centre and radius. */
   clearing?: { x: number; z: number; radius: number };
+  /** A levelled shelf in the relief — see FlatRegion. Nothing is scattered on it. */
+  flat?: FlatRegion;
   /** Everything is placed from this one seed. */
   seed?: number;
 
@@ -116,6 +118,7 @@ export interface GrassFieldStats {
   rockPrototypes: number;
   bounds: THREE.Box3;
   clearing: { x: number; z: number; radius: number };
+  flat: FlatRegion | undefined;
   /** Size of the GLB's original ground quad. Kept as the scene's unit of area. */
   tileSize: THREE.Vector2;
   groundBox: THREE.Box3;
@@ -137,11 +140,14 @@ export class GrassField {
     rockPrototypes: 0,
     bounds: new THREE.Box3(),
     clearing: { x: 0, z: 0, radius: 0 },
+    flat: undefined,
     tileSize: new THREE.Vector2(),
     groundBox: new THREE.Box3(),
   };
 
-  private readonly options: Required<Omit<GrassFieldOptions, 'params' | 'flowers'>>;
+  private readonly options: Required<Omit<GrassFieldOptions, 'params' | 'flowers' | 'flat'>> & {
+    flat: FlatRegion | undefined;
+  };
   private readonly template: THREE.Group;
   private readonly disposables: Array<{ dispose(): void }> = [];
   private readonly treeProtos: Prototype[] = [];
@@ -177,6 +183,7 @@ export class GrassField {
       waterLevel: options.waterLevel ?? -0.6,
       submergedRun: options.submergedRun ?? 9,
       clearing: options.clearing ?? { x: -9, z: -1, radius: 9.5 },
+      flat: options.flat,
       seed: options.seed ?? 1337,
     };
     Object.assign(this.params, options.params ?? {});
@@ -415,6 +422,7 @@ export class GrassField {
       waterLevel: o.waterLevel,
       submergedRun: o.submergedRun,
       seed: o.seed,
+      flat: o.flat,
     });
 
     // The sand band, published to every shader that reads the dirt mask. Starting
@@ -450,6 +458,11 @@ export class GrassField {
     // margin matches the shore band above, so props stop where the grass does.
     const nearShore = (z: number): boolean => z > o.shoreZ - 6.5;
 
+    // Nothing is scattered on the levelled shelf or in the margin that ramps into
+    // it. The shelf exists to be built on, and the ramp is the one part of the
+    // ground steep enough that a trunk would visibly lean.
+    const onShelf = (x: number, z: number): boolean => this.onShelf(x, z);
+
     // ── Rocks ────────────────────────────────────────────────────────────────
     // Biased TOWARD bare earth: the dirt mask is where the grass thins out, and
     // stone showing through thin grass is the reason it is thin.
@@ -458,7 +471,7 @@ export class GrassField {
       {
         count: Math.round((area / 100) * o.rockDensity),
         minDistance: 1.6,
-        reject: (x, z) => nearShore(z) || inClearing(x, z) || this.terrain.slopeAt(x, z) > 0.6,
+        reject: (x, z) => nearShore(z) || inClearing(x, z) || onShelf(x, z) || this.terrain.slopeAt(x, z) > 0.6,
         weight: (x, z) => (0.25 + 0.75 * groundDirt(x, z, dirt)) * clearingFringe(x, z),
       },
       rng,
@@ -486,7 +499,7 @@ export class GrassField {
         count: Math.round((area / 100) * o.treeDensity),
         minDistance: 3.2,
         reject: (x, z) => {
-          if (nearShore(z) || inClearing(x, z) || this.terrain.slopeAt(x, z) > 0.45) return true;
+          if (nearShore(z) || inClearing(x, z) || onShelf(x, z) || this.terrain.slopeAt(x, z) > 0.45) return true;
           for (const rock of this.placedRocks) {
             if ((rock.x - x) ** 2 + (rock.z - z) ** 2 < (rock.w + 0.8) ** 2) return true;
           }
@@ -546,10 +559,26 @@ export class GrassField {
       this.group.add(groundMesh);
       groundMesh.updateMatrixWorld(true);
 
+      // Nothing grows ON the levelled shelf, and only a quarter as much grows on the
+      // strip of beach in FRONT of it.
+      //
+      // A patch-level rule rather than a per-blade reject, because the shelf is
+      // aligned to a patch boundary: a patch is either entirely town or entirely
+      // not. It is also the difference between a scene that runs and one that does
+      // not — the island grew from four columns of patches to eighteen to carry the
+      // town, and at 16k blades a patch that is 864,000 blades, most of them under
+      // a building. Skipping the town's own patches takes it to 416,000; thinning
+      // the verge in front of it takes it to 248,000, against 192,000 before any of
+      // this existed. The verge is thinned rather than cleared because a town on a
+      // coast has a grassy quay, and bare sand up to the doorsteps reads as unbuilt.
+      const townPatch = this.onShelf(patch.centre.x, patch.centre.z);
+      if (townPatch) continue;
+      const vergePatch = this.onShelfX(patch.centre.x);
+
       const bladeMesh = scatterBlades(groundMesh, {
         uniforms: patchUniforms,
         density: p.grDensity,
-        maxCount: p.grMaxCount,
+        maxCount: vergePatch ? Math.round(p.grMaxCount * 0.25) : p.grMaxCount,
         minWidth: p.grMinWidth,
         maxWidth: p.grMaxWidth,
         minLength: p.grMinLength,
@@ -585,7 +614,35 @@ export class GrassField {
     this.stats.trees = trees;
     this.stats.rocks = this.placedRocks.length;
     this.stats.clearing = clearing;
+    this.stats.flat = o.flat;
     this.stats.bounds.setFromObject(this.group);
+  }
+
+  /**
+   * Is this world point on the levelled shelf, or on the margin ramping into it?
+   *
+   * One test, used by the prop scatters AND by the blade patch skip, so "the town
+   * is bare" cannot come to mean two different rectangles.
+   */
+  onShelf(x: number, z: number): boolean {
+    const f = this.options.flat;
+    if (!f) return false;
+    const m = f.blend;
+    return this.onShelfX(x) && z > f.minZ - m && z < f.maxZ + m;
+  }
+
+  /**
+   * Is this point in the shelf's X range, whatever its Z?
+   *
+   * The shelf stops short of the waterline on purpose (see `TOWN_SHELF`), so the
+   * beach row in front of the town is NOT on the shelf and keeps its natural
+   * relief — but it is still the town's foreshore rather than open meadow, and it
+   * is thinned accordingly.
+   */
+  onShelfX(x: number): boolean {
+    const f = this.options.flat;
+    if (!f) return false;
+    return x > f.minX - f.blend && x < f.maxX + f.blend;
   }
 
   /** Land height at a world point — for putting anything else down on the ground. */

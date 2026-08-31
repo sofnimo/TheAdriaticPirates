@@ -39,6 +39,23 @@ world procedurally.
     triangles and 40 draw calls. One hero aircraft at a quarter of the triangle budget and 38
     of the 40 draws is not shippable as-is; it needs a decimate and a material merge.
 
+- **`bird.fbx`** — a rigged gull, from `birds.zip` in `~/Downloads`. Gitignored
+  like the Savoia; 330 kB, 810 triangles, no textures, material-coloured black with a yellow
+  beak. `/grassworld` flies six of them over the meadow.
+
+  **The file looks like a five-bird flock and is not one.** It ships five `SkinnedMesh`es,
+  five armatures and a 0.67 s clip of 105 tracks — which reads as 5 birds x 7 bones x 3
+  channels. But all five armatures use the *same seven bone names*, and an `AnimationMixer`
+  binds a track to a node by name, first match in a depth-first walk. So all fifteen tracks
+  called `Bone.quaternion` land on one armature's `Bone` and fight over it, and the other
+  four armatures are never addressed. Load it as-is and exactly one bird flaps while four
+  glide in their bind pose.
+
+  `src/dev/grass/Birds.ts` therefore uses the file for the one thing it reliably contains —
+  a single rigged, animated bird — and clones that six times, each with its own skeleton,
+  mixer and place in the wingbeat. Renaming five armatures' worth of bones inside a binary
+  FBX is not a fix this repo should be making.
+
 ## Sidecars: `<model>.parts.json`
 
 A model file may sit next to a sidecar of the same stem — `Porcorosso.fbx` is configured by
