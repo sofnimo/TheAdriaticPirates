@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Adriatic — model bench</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink: #ebedea;
+        --ink-dim: #9bb5a8;
+        --panel: rgba(12, 20, 24, 0.86);
+        --pass: #14707c;
+        --fail: #c63427;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #1b1e20;
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+        color: var(--ink);
+      }
+
+      #viewport {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+
+      #ui { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+
+      /* Measured facts about the loaded asset. Same panel styling as the gate reports in
+         index.html on purpose — the numbers are the deliverable in both places. */
+      .gate-report {
+        position: absolute;
+        left: 12px;
+        bottom: 12px;
+        max-width: 62vw;
+        max-height: 46vh;
+        overflow: auto;
+        margin: 0;
+        padding: 10px 12px;
+        border-radius: 3px;
+        background: var(--panel);
+        color: var(--ink);
+        font-size: 10.5px;
+        line-height: 1.45;
+        white-space: pre;
+        pointer-events: auto;
+      }
+
+      .freecam-hud {
+        position: absolute;
+        left: 12px;
+        top: 56px;
+        max-width: 62vw;
+        padding: 8px 10px;
+        border-radius: 3px;
+        background: var(--panel);
+        color: var(--ink);
+        font-size: 10.5px;
+        line-height: 1.5;
+        white-space: pre;
+        pointer-events: none;
+      }
+
+      .drop-hint {
+        position: absolute;
+        top: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 6px 12px;
+        border: 1px dashed rgba(155, 181, 168, 0.45);
+        border-radius: 3px;
+        background: var(--panel);
+        color: var(--ink-dim);
+        font-size: 10.5px;
+        transition: color 0.12s, border-color 0.12s;
+      }
+
+      /* The whole window is the drop target, so the affordance has to be the thing that
+         reacts — there is no outlined box to light up. */
+      .drop-hint.is-over {
+        color: var(--ink);
+        border-color: var(--pass);
+        border-style: solid;
+      }
+
+      .drop-hint.is-busy { color: var(--ink); border-color: var(--ink-dim); }
+      .drop-hint.is-busy::after { content: "  · loading"; }
+
+      .bench-toast {
+        position: absolute;
+        top: 46px;
+        left: 50%;
+        transform: translateX(-50%);
+        max-width: 70vw;
+        padding: 5px 10px;
+        border-radius: 3px;
+        background: var(--pass);
+        color: var(--ink);
+        font-size: 10.5px;
+        pointer-events: none;
+      }
+
+      .bench-toast.is-error { background: var(--fail); color: #fff; }
+
+      .budget-hud {
+        position: fixed;
+        right: 8px;
+        bottom: 8px;
+        min-width: 190px;
+        z-index: 40;
+        padding: 6px 8px;
+        border-radius: 3px;
+        background: var(--panel);
+        font-size: 10px;
+        line-height: 1.5;
+        pointer-events: none;
+      }
+
+      .budget-row { display: flex; gap: 8px; justify-content: space-between; }
+      .budget-label { color: var(--ink-dim); }
+      .budget-row.is-near .budget-value { color: #ddd0a8; }
+      .budget-row.is-over .budget-value { color: var(--fail); }
+
+      .budget-section {
+        margin-top: 4px;
+        padding-top: 4px;
+        border-top: 1px solid rgba(155, 181, 168, 0.25);
+        color: var(--ink-dim);
+        font-size: 9px;
+      }
+
+      .budget-section:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+    </style>
+  </head>
+  <body>
+    <canvas id="viewport"></canvas>
+    <div id="ui"></div>
+    <script type="module" src="/src/testmodels.ts"></script>
+  </body>
+</html>

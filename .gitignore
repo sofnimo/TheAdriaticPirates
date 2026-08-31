@@ -3,3 +3,8 @@ dist/
 .vite/
 *.local
 .DS_Store
+
+# Upstream reference clone of cortiz2894/stylized-components — 83 MB and its own git
+# repo. The parts this project actually uses are vendored under src/vendor/grassField/
+# with their licence and attribution; the clone is a local reading copy, not source.
+stylized-components/

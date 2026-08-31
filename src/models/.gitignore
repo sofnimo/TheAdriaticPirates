@@ -1,0 +1,12 @@
+# Test assets are scratch, not source: the bench globs whatever is here, and binary model
+# files have no business in the history of a repo that generates its world procedurally.
+*
+!.gitignore
+!README.md
+# Except the calibration box: 2 kB of JSON, and it means the bench has something to show on
+# a fresh clone. Porcorosso.fbx stays ignored - 9.5 MB of binary, and it is a third-party
+# download rather than something this repo authors. See README.md for where to get it.
+!reference-box.gltf
+# Sidecars are a few hundred bytes of text and they are the only record of WHY an asset is
+# shown the way it is. They belong in the history even when the model they describe does not.
+!*.parts.json

@@ -61,6 +61,7 @@ export class Engine {
   private camera: THREE.Camera | null = null;
   private devScene: THREE.Scene | null = null;
   private devEnabled = true;
+  private devOnTop = false;
   private post: PostChain | null = null;
   /** Draw/triangle counts of the scene pass alone, filled by the chain's stats tap. */
   private tappedCalls = 0;
@@ -123,6 +124,21 @@ export class Engine {
     this.devEnabled = enabled;
   }
 
+  /**
+   * Clear the depth buffer before the overlay pass, so helpers draw over the world.
+   *
+   * Opt-in, because the two render paths disagree about what the canvas depth buffer holds
+   * by the time the overlay runs and only one of them is a problem. Straight to canvas, it
+   * holds the world's depth and helpers occlude correctly. Through the composer, it holds
+   * the depth the final fullscreen quad wrote, which is nearer than anything in the scene —
+   * so an overlay behind that quad is rejected wholesale and simply never appears, while
+   * still counting draws in the stats. A gizmo you cannot see but can measure is the worst
+   * of both, and this is the switch that fixes it.
+   */
+  setDevOverlayOnTop(onTop: boolean): void {
+    this.devOnTop = onTop;
+  }
+
   onFrame(cb: FrameCallback): void {
     this.frameCallbacks.push(cb);
   }
@@ -178,6 +194,7 @@ export class Engine {
       this.renderer.info.reset();
       const previousAutoClear = this.renderer.autoClear;
       this.renderer.autoClear = false;
+      if (this.devOnTop) this.renderer.clearDepth();
       this.renderer.render(this.devScene, this.camera);
       this.renderer.autoClear = previousAutoClear;
       this.capture(this.stats.dev);
