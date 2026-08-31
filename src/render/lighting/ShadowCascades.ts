@@ -31,7 +31,11 @@ import { shadowUniforms, type ShadowUniforms } from '../shading/ShadingUniforms'
 export interface ShadowCascadeOptions {
   /** §8.2: 3. Four only if the draw distance grows past ~6 km. */
   readonly cascades?: number;
-  /** §8.2: 1024 per cascade. Hardness comes from bias and radius, not from resolution. */
+  /**
+   * §8.2 says 1024 per cascade; this ships 2048. See the note on csmShadowMapSize in
+   * art/budgets.ts — with the filter already hard and the ramp cutting to binary, resolution
+   * is the ONLY thing left that decides how sharp a shadow edge is.
+   */
   readonly mapSize?: number;
   /** Metres of camera range the cascades cover. Past this, surfaces are simply lit. */
   readonly maxDistance?: number;
@@ -72,7 +76,24 @@ export class ShadowCascades {
     this.count = Math.max(1, Math.min(4, options.cascades ?? LIGHT.csmCascades));
     this.mapSize = options.mapSize ?? LIGHT.csmShadowMapSize;
     this.maxDistance = options.maxDistance ?? 4000;
-    this.lambda = options.lambda ?? 0.55;
+    // 0.80, up from 0.55 — pushed toward the logarithmic end, and it is the cheaper half of
+    // sharpening the shadows because it costs nothing at all.
+    //
+    // Lambda decides how the 4 km of shadow range is divided between the cascades. At 0.55 the
+    // first cascade was carrying everything out to 600 m on one 2048 map, so its texels were
+    // as coarse as they were near. At 0.80 it covers ~300 m instead and the same map resolves
+    // four times finer, with the outer cascades taking the range it gave up.
+    //
+    // Measured across the band, in metres of world per shadow texel:
+    //
+    //            5 m    100 m   300 m   600 m   1200 m   2500 m
+    //   before   1.13    1.13    1.13    1.13     2.43     7.43
+    //   after    0.26    0.26    0.64    0.64     3.72     3.72
+    //
+    // Better everywhere except one band around 1200 m, which loses 2.4 -> 3.7 m while 2500 m
+    // gains 7.4 -> 3.7. That trade is worth taking: the near field is where a shadow edge is
+    // read, and it is the range the new walking view spends all of its time in.
+    this.lambda = options.lambda ?? 0.8;
 
     // Stands in until three has actually rendered a cascade. A sampler bound to nothing is
     // undefined behaviour across drivers, and the first frame is exactly when the scene is

@@ -6,6 +6,7 @@ import { Ocean } from '../world/ocean/Ocean';
 import { Archipelago } from '../world/island/Archipelago';
 import { TEST_ISLAND_SEED } from '../world/island/IslandSpec';
 import type { CoverField } from '../world/island/CoverField';
+import type { IslandField } from '../world/island/IslandField';
 import { ShoreAtlas } from '../world/shore/ShoreAtlas';
 import { makeShoreUniforms, syncShoreSwell, updateFoamLOD, type ShoreUniforms } from '../world/shore/shoreUniforms';
 import {
@@ -15,6 +16,7 @@ import { globalUniforms } from '../render/shading/ShadingUniforms';
 import { WaveSurface } from '../world/ocean/waveSurface';
 import { ShelterField } from '../world/ocean/ShelterField';
 import { Seaplane } from '../game/flight/Seaplane';
+import { Walker } from '../game/walk/Walker';
 
 /**
  * WORLD VALIDATION SCENE — ocean, continuous depth ramp, and from Step 3 one hand-authored
@@ -27,12 +29,13 @@ import { Seaplane } from '../game/flight/Seaplane';
  *   island   — three-quarter aerial on the island, 00 §3 rule 9's default camera
  *   profile  — low and across the spine, showing the cliffed and sheltered flanks together
  *   canopy   — low across the densest wooded slope, what the vegetation gate measures on
+ *   walk     — on foot on the hero island, eye height, gravity and a climb limit
  *   free     — hands the camera to FreeCamera and leaves it alone
  *   topdown / low / high — the camera envelope, for aliasing and fade checks
  */
 
 export type OceanViewName =
-  | 'cove' | 'shelf' | 'skim' | 'island' | 'profile' | 'canopy' | 'shore'
+  | 'cove' | 'shelf' | 'skim' | 'island' | 'profile' | 'canopy' | 'shore' | 'walk'
   | 'topdown' | 'low' | 'high' | 'cockpit' | 'free';
 
 interface ViewSpec {
@@ -90,6 +93,9 @@ const VIEWS: Record<OceanViewName, ViewSpec> = {
   // Never read either: the seaplane's own chase boom owns the camera while this is selected,
   // the same way `free` hands it to `FreeCamera`.
   cockpit: { position: new THREE.Vector3(0, 30, 0), target: new THREE.Vector3(0, 0, -1) },
+  // Never read either: the Walker owns the camera while this is selected, and places it on
+  // the hero island's flattest walkable ground in the constructor.
+  walk: { position: new THREE.Vector3(0, 2, 0), target: new THREE.Vector3(0, 2, -1) },
 };
 
 /**
@@ -232,6 +238,61 @@ function gentlestShore(
 }
 
 /**
+ * Somewhere on the hero island a person can stand — where the walking view spawns.
+ *
+ * THREE THINGS AT ONCE, and the middle one is what makes it a place rather than a coordinate.
+ *
+ *   ON THE HERO. `ownerAt` rather than "is land", or the search finds the nearest islet and
+ *   spawns the walker on a rock in the sea.
+ *
+ *   FLAT UNDERFOOT. Scored on the largest height difference across a 3-sample neighbourhood.
+ *   03 §3.5 gives every island a cliffed seaward flank, and the highest and most "interesting"
+ *   ground is exactly the ground a person cannot stand on — spawning there drops the walker
+ *   down a rock face before they have touched a key. Flattest wins, not highest.
+ *
+ *   ABOVE THE TIDE AND BELOW THE CRAGS. A band, not a minimum: under a couple of metres is
+ *   beach that the surf runs over, and the peaks are cliff.
+ *
+ * Returns the field's own centre if nothing qualifies, which cannot happen for a real island
+ * but keeps the caller from having to handle a null it can do nothing about.
+ */
+function walkableSpawn(field: IslandField, owner: number): { x: number; z: number } {
+  const n = field.resolution;
+  const R = 2;
+  let best = Infinity;
+  let bx = field.originX + field.worldSize * 0.5;
+  let bz = field.originZ + field.worldSize * 0.5;
+
+  for (let iz = R; iz < n - R; iz += 2) {
+    for (let ix = R; ix < n - R; ix += 2) {
+      const x = field.originX + ix * field.metresPerSample;
+      const z = field.originZ + iz * field.metresPerSample;
+      if (field.ownerAt(x, z) !== owner) continue;
+      const h = field.heightAt(x, z);
+      if (h < 2 || h > 45) continue;
+
+      // Roughness = the worst height difference to any neighbour a couple of samples out.
+      let lo = h;
+      let hi = h;
+      for (let dz = -R; dz <= R; dz += R) {
+        for (let dx = -R; dx <= R; dx += R) {
+          const nh = field.heightAt(x + dx * field.metresPerSample, z + dz * field.metresPerSample);
+          if (nh < lo) lo = nh;
+          if (nh > hi) hi = nh;
+        }
+      }
+      const roughness = hi - lo;
+      if (roughness < best) {
+        best = roughness;
+        bx = x;
+        bz = z;
+      }
+    }
+  }
+  return { x: bx, z: bz };
+}
+
+/**
  * The wooded texel with the most forest around it — where the canopy view is aimed.
  *
  * Scored over a neighbourhood rather than per texel: a single dense-forest texel in a field
@@ -332,12 +393,22 @@ export class OceanTestScene {
   readonly shoreTarget = new THREE.Vector3();
   readonly shelter: ShelterField;
   readonly seaplane: Seaplane;
+  /**
+   * The walking view's controller, or null when the scene was built without a canvas.
+   *
+   * Null rather than a Walker over a detached element: mouse look binds to the canvas, so a
+   * stand-in would give a walker who moves but cannot turn — worse than not offering the view.
+   */
+  readonly walker: Walker | null;
   readonly devOverlay = new THREE.Scene();
 
   private view: OceanViewName = 'cove';
   private time = 0;
 
-  constructor(seaState: SeaStateName = DEFAULT_SEA_STATE) {
+  // The canvas is optional and only the Walker wants it: pointer lock has to be requested on
+  // the element being rendered into, and this scene otherwise never touches the DOM. Without
+  // one the walking view still works on drag-look.
+  constructor(seaState: SeaStateName = DEFAULT_SEA_STATE, canvas?: HTMLCanvasElement) {
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.5, 25000);
 
     this.sky = new SkyDome(this.scene, 10000);
@@ -496,6 +567,19 @@ export class OceanTestScene {
       heading: Math.atan2(strikeX, strikeZ),
     });
 
+    // ON FOOT. Spawned on the HERO island — index 0 in the layout order, the same island every
+    // aerial view is framed on — at the flattest walkable ground `walkableSpawn` can find.
+    this.walker = canvas
+      ? new Walker(this.camera, canvas, this.archipelago.field, this.scene)
+      : null;
+    if (this.walker) {
+      const spawn = walkableSpawn(this.archipelago.field, 0);
+      // Faced at the island's centre, so the first thing on screen is land rather than
+      // whichever patch of empty sea the search happened to end up pointing at.
+      const toCentre = Math.atan2(cx - spawn.x, cz - spawn.z);
+      this.walker.placeAt(spawn.x, spawn.z, (toCentre * 180) / Math.PI);
+    }
+
     this.setView('cove');
   }
 
@@ -509,6 +593,21 @@ export class OceanTestScene {
     // keys are the free camera's as well, so leaving the cockpit has to hand them back.
     this.seaplane.input.enabled = view === 'cockpit';
     if (view !== 'cockpit') this.seaplane.input.release();
+
+    // The walker takes the same WASD keys as the free camera and the cockpit, so exactly one
+    // of the three may be listening at a time — the alternative is walking and flying at once.
+    if (this.walker) {
+      if (view === 'walk') this.walker.enable();
+      else this.walker.disable();
+    }
+    if (view === 'walk') {
+      // The Walker owns the camera outright, the way the chase boom does in the cockpit. It
+      // was placed on the island in the constructor and has held its own position since, so
+      // switching back into this view returns you to where you left off rather than respawning.
+      this.walker?.update(0);
+      this.update(0);
+      return;
+    }
 
     // The free camera and the chase boom each own the pose. Refresh the camera-dependent
     // systems — the ocean rings and the sky dome both follow the camera — but do not move it.
@@ -542,6 +641,12 @@ export class OceanTestScene {
     this.waveSurface.time = this.time;
     if (dt > 0) this.seaplane.update(dt);
     if (this.view === 'cockpit') this.seaplane.driveCamera(this.camera, Math.max(dt, 1e-4));
+    // Driven here rather than from main's loop, unlike the free camera, because the walker
+    // needs the island field and this is what owns it. It moves the camera itself, so it has
+    // to run BEFORE the cascades and the ocean rings are refitted below — they all key off the
+    // camera, and a frame where they fit a pose the walker then leaves is a frame of shadows
+    // sliding a step behind the view.
+    if (this.view === 'walk' && dt > 0) this.walker?.update(dt);
 
     this.camera.updateMatrixWorld(true);
     // The shared clock, set here where the world clock already lives.

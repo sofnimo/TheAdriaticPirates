@@ -16,6 +16,8 @@
 uniform float uRampSteps;      // 2.0-4.0, per-surface
 uniform vec3  uShadowTint;     // hue-shift target. NOT black/grey.
 uniform float uShadowTintMix;  // 0-1, how far the shadow band leans into the tint
+uniform vec3  uShadowDeep;     // SKY.shadowDeep — the sky-blue every shadow leans toward
+uniform float uShadowCool;     // 0-1, per-surface. 0 leaves the authored tint alone.
 uniform vec3  uRimColor;
 uniform float uRimPower;       // 2.0-6.0
 uniform float uRimStrength;    // 0-0.6, kept low
@@ -82,11 +84,28 @@ vec3 applyGouacheRampTinted(
   float hardShadow = step(0.5, shadowFactor);
   band *= hardShadow;
 
-  // Authored tint, never a flat multiply: lerp toward a hand-picked hex (00 §3 rule 2).
-  // How far that moves the hue is a property of the sampled palette, not a target to
-  // chase — cloud swings ~93 deg toward the sky's cyan, sea only ~9 deg into near-black
-  // indigo. Both are correct; the mechanism is what's binding.
-  vec3 shadowColor = mix(baseColor * 0.82, shadowTint, uShadowTintMix) * uFillTint;
+  // SHADOW IS SKY-COLOURED, and this is the step that says so.
+  //
+  // Rule 2 says a shadow is a hue shift toward an authored hex rather than `base * 0.5`, and
+  // that was already true — but each surface leaned toward its OWN darker relative, so
+  // limestone's shadow was a darker limestone: measured, saturation 0.08 at lightness 0.44,
+  // which is a mid grey however it was arrived at. What a shadow actually is, is the part of a
+  // surface lit by the SKY instead of the sun, so it should carry the sky's colour. Leaning
+  // every tint toward one dark blue is the same mechanism — still a lerp between authored
+  // hexes, no multiply anywhere — pointed at the right target.
+  //
+  // A LERP IN RGB, NOT A HUE ROTATION, and that was not the first attempt. Rotating hue toward
+  // blue in HSL fails twice on this palette: limestone's tint sits at hue 32, exactly 180 from
+  // the target, so shortest-path rotation detours through MAGENTA, and forcing the long way
+  // round lands in green at any partial amount. Straight-line RGB toward a properly chromatic
+  // blue avoids both — and it has to be chromatic, because a lerp toward a desaturated navy
+  // passes through neutral and would deepen the grey it is here to remove.
+  //
+  // `uShadowCool` is per surface because three of them carry standing instructions to the
+  // contrary — the aircraft must stay hot, brick must stay warm, and the sea's tint is already
+  // deeper than the target. See art/surfaces.ts.
+  vec3 tint = mix(shadowTint, uShadowDeep, clamp(uShadowCool, 0.0, 1.0));
+  vec3 shadowColor = mix(baseColor * 0.82, tint, uShadowTintMix) * uFillTint;
   vec3 litColor = baseColor * uLitTint;
   vec3 shaded = mix(shadowColor, litColor, band);
 

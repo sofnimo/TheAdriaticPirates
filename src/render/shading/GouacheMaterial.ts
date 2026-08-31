@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SKY } from '../../art/palette';
 import { SURFACES, type SurfaceName, type SurfacePreset } from '../../art/surfaces';
 import { globalUniforms, shadowUniforms } from './ShadingUniforms';
 
@@ -40,6 +41,8 @@ export interface GouacheMaterial extends THREE.MeshStandardMaterial {
   gouacheUniforms: {
     uRampSteps: { value: number };
     uShadowTint: { value: THREE.Color };
+    uShadowDeep: { value: THREE.Color };
+    uShadowCool: { value: number };
     uShadowTintMix: { value: number };
     uRimColor: { value: THREE.Color };
     uRimPower: { value: number };
@@ -83,6 +86,8 @@ export function createGouacheMaterial(options: GouacheOptions): GouacheMaterial 
     uRampSteps: { value: preset.rampSteps },
     uShadowTint: { value: new THREE.Color(preset.shadowTint) },
     uShadowTintMix: { value: preset.shadowTintMix },
+    uShadowDeep: { value: new THREE.Color(SKY.shadowDeep.hex) },
+    uShadowCool: { value: preset.shadowCool },
     uRimColor: { value: new THREE.Color(preset.rimColor) },
     uRimPower: { value: preset.rimPower },
     uRimStrength: { value: preset.rimStrength },
@@ -166,6 +171,7 @@ export function createGouacheMaterial(options: GouacheOptions): GouacheMaterial 
 export function applySurfacePreset(material: GouacheMaterial, preset: SurfacePreset): void {
   material.gouacheUniforms.uRampSteps.value = preset.rampSteps;
   material.gouacheUniforms.uShadowTint.value.set(preset.shadowTint);
+  material.gouacheUniforms.uShadowCool.value = preset.shadowCool;
   material.gouacheUniforms.uShadowTintMix.value = preset.shadowTintMix;
   material.gouacheUniforms.uRimColor.value.set(preset.rimColor);
   material.gouacheUniforms.uRimPower.value = preset.rimPower;

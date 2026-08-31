@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { COAST, SEA } from '../../art/palette';
+import { COAST, SEA, SKY } from '../../art/palette';
 import { GLINT_RULE, GLINT_SOLO } from '../../art/seaRamp';
 import { SURFACES } from '../../art/surfaces';
 import { DEFAULT_SEA_STATE, SEA_STATES, waveDirection, type SeaStateName } from '../../art/seaStates';
@@ -109,6 +109,8 @@ export class Ocean {
       uRampSteps: { value: surface.rampSteps },
       uShadowTint: { value: new THREE.Color(surface.shadowTint) },
       uShadowTintMix: { value: surface.shadowTintMix },
+      uShadowDeep: { value: new THREE.Color(SKY.shadowDeep.hex) },
+      uShadowCool: { value: surface.shadowCool },
       uRimColor: { value: new THREE.Color(surface.rimColor) },
       uRimPower: { value: surface.rimPower },
       uRimStrength: { value: surface.rimStrength },
@@ -117,14 +119,24 @@ export class Ocean {
       uWaves: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] },
       uSteepness: { value: [0, 0, 0, 0] },
       uWaveTime: { value: 0 },
-      // Displacement must reach zero BEFORE the first ring boundary (50 m), or the finer
-      // ring's displaced vertices leave T-junction cracks against the coarser ring's
-      // straight edge — which shows as a bright hairline of sky along the seam. Proper
-      // skirts or edge stitching would let this extend further out; the near field is all
-      // that needs real displacement anyway (02 §1.1), so that work waits for the
-      // landing/taxi camera.
-      uDisplaceFadeStart: { value: 25 },
-      uDisplaceFadeEnd: { value: 45 },
+      // GEOMETRIC WAVES TO ~1.15 KM, where this was 45 m.
+      //
+      // The old rule was that displacement had to reach zero before the FIRST ring boundary,
+      // or the finer ring's extra edge vertices lifted off the coarser ring's straight chord
+      // and opened a T-junction crack. That capped real waves at the innermost ring and left
+      // every other ring a flat plane. The rule is gone rather than worked around: the seams
+      // are now stitched in the vertex shader (see `aStitch` in ocean.vert.glsl and
+      // RingMesh.buildAnnulus), so a seam vertex takes the interpolated displacement of its
+      // two coarse neighbours and lands exactly on the line the coarse ring is drawing.
+      //
+      // What remains is a resolution limit, not a cracking one. Displacement now runs at full
+      // strength through the 150 m and 600 m boundaries and tapers out across the 15 m ring,
+      // finishing before 1200 m — the point at which the mesh has fewer than about eight
+      // samples across the 170 m swell and would render it as a zigzag rather than a wave.
+      // Past that the surface is flat and gerstnerNormal carries it, which 02 §1.1 supports:
+      // the wave silhouette is sub-pixel from 200 m up, so distance reads as shading anyway.
+      uDisplaceFadeStart: { value: 700 },
+      uDisplaceFadeEnd: { value: 1150 },
 
       // --- shelter (ShelterField) ---
       // Attached by the scene once the islands exist, the same way the shore block is. Until

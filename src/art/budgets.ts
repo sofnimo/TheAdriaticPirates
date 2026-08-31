@@ -44,7 +44,18 @@ export const LIGHT = Object.freeze({
   rampStepsRange: [2, 4] as const,
   shadowTintMix: 0.85,
   csmCascades: 3,
-  csmShadowMapSize: 1024,
+  /**
+   * 2048, where 04 §8.2 says 1024 — a deliberate departure, and the reason is measurable.
+   *
+   * Nothing else in the shadow path is soft: the filter is PCFShadowMap with radius 0, and the
+   * gouache ramp cuts the sampled factor to binary with `step(0.5, ...)`. So a shadow edge is
+   * hard in TONE already, and every bit of apparent softness is the edge's POSITION quantising
+   * to the shadow texel grid. At 1024 the near cascade's texel was 1.13 m of world — over half
+   * a person — which is why edges read as ragged rather than crisp.
+   *
+   * Doubling halves it. Costs 48 MB of shadow map across three cascades, up from 12.
+   */
+  csmShadowMapSize: 2048,
   shadowBiasRange: [-0.0005, 0.0001] as const,
   shadowRadiusRange: [0, 1] as const,
   bloomThresholdRange: [0.9, 0.94] as const,

@@ -14,6 +14,7 @@ import { ShoreProbe } from './dev/ShoreProbe';
 import { ShadowProbe } from './dev/ShadowProbe';
 import { FreeCamera } from './app/FreeCamera';
 import { GLINT_SOLO_OPTIONS } from './art/seaRamp';
+import { SURFACES } from './art/surfaces';
 import { tipCrestNorm } from './world/ocean/Ocean';
 import { SEA_STATE_OPTIONS, type SeaStateName } from './art/seaStates';
 import { TIME_OF_DAY_NAMES, type TimeOfDayName } from './art/timeOfDay';
@@ -239,7 +240,7 @@ if (sceneName === 'palette') {
   };
 } else {
   // ---------------------------------------------------------------- ocean gate
-  const test = new OceanTestScene();
+  const test = new OceanTestScene(undefined, canvas);
   const probe = new OceanProbe(engine.renderer, test);
   const islandProbe = new IslandProbe(engine.renderer, test);
   const shoreProbe = new ShoreProbe(engine.renderer, test);
@@ -314,7 +315,7 @@ if (sceneName === 'palette') {
 
   const viewParam = query.get('view');
   const VIEW_NAMES: OceanViewName[] = [
-    'cove', 'shelf', 'skim', 'island', 'profile', 'canopy', 'shore',
+    'cove', 'shelf', 'skim', 'island', 'profile', 'canopy', 'shore', 'walk',
     'topdown', 'low', 'high', 'cockpit', 'free',
   ];
   const isView = (v: string | null): v is OceanViewName =>
@@ -784,6 +785,28 @@ if (sceneName === 'palette') {
   genFolder.add(genParams, 'apply').name('load this seed');
   genFolder.add(genParams, 'reroll').name('random island');
 
+  // ---- shadows -----------------------------------------------------------------------------
+  // How far every LAND shadow leans toward the sky-blue core in art/palette.ts. It darkens and
+  // cools in one move, because the thing it leans toward is both darker and bluer than the
+  // tints it starts from — a shadow is the part of a surface lit by the sky rather than the
+  // sun, so it takes the sky's colour.
+  //
+  // Land only. The sea, the aircraft and brick carry standing instructions about their own
+  // shadow colour (see art/surfaces.ts) and are deliberately not on this slider.
+  const shadowFolder = debug.gui.addFolder('Shadows');
+  const shadowParams = { cool: SURFACES.limestone.shadowCool };
+  shadowFolder
+    .add(shadowParams, 'cool', 0, 1, 0.01)
+    .name('lean to sky blue')
+    .onChange((v: number) => {
+      for (const i of test.archipelago.islands) {
+        for (const m of [i.terrainMaterial, i.overlayMaterial]) {
+          const u = m.uniforms.uShadowCool;
+          if (u) u.value = v;
+        }
+      }
+    });
+
   // ---- tier A0: the ground ---------------------------------------------------------------
   const baseFolder = debug.gui.addFolder('Tier A0 — ground');
   baseFolder.add(tiers, 'base').name('visible').onChange((v: boolean) => {
@@ -928,6 +951,16 @@ if (sceneName === 'palette') {
   };
 
   const paintCamHud = (): void => {
+    // The same panel serves both roving views, because they answer the same question — where
+    // am I and how do I move — and only one of them can be active at a time.
+    if (params.view === 'walk' && test.walker) {
+      camHud.textContent =
+        test.walker.status() +
+        '\n WASD / arrows walk  ·  shift run  ·  space jump' +
+        '\n drag or click to orbit the camera  ·  esc releases the mouse' +
+        '\n 6 ft figure  ·  the body turns to face where it walks  ·  cliffs cannot be climbed';
+      return;
+    }
     camHud.textContent =
       freeCam.status() +
       '\n WASD / arrows fly  ·  Q E or space C up-down  ·  shift boost  ·  alt crawl' +
@@ -950,6 +983,11 @@ if (sceneName === 'palette') {
       freeCam.enable();
       camHud.style.display = '';
       paintCamHud();
+    } else if (v === 'walk') {
+      // The walker is enabled by the scene's own setView, which owns it. The free camera has
+      // to be told to let go of the keys either way — it and the walker share WASD.
+      freeCam.disable();
+      camHud.style.display = '';
     } else {
       freeCam.disable();
       camHud.style.display = 'none';
@@ -1045,6 +1083,10 @@ if (sceneName === 'palette') {
     freeCam.update(ctx.dt);
     test.update(ctx.dt);
     if (params.view === 'cockpit') paintPilotHud();
+    // Repainted per frame rather than on a move callback, because a walker is almost always
+    // moving — gravity keeps the readout live even when no key is down, which is exactly when
+    // you want to see it: it is how you tell falling from standing.
+    if (params.view === 'walk') paintCamHud();
   });
 
   window.addEventListener('keydown', (e) => {

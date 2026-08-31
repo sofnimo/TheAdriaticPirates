@@ -55,8 +55,20 @@ export function buildIslandMesh(field: IslandField, options: IslandMeshOptions =
   const iz0 = toIndex(request.minZ, field.originZ);
   const iz1 = toIndex(request.maxZ, field.originZ);
 
-  const cap = options.maxSegments ?? 384;
-  let stride = Math.max(1, Math.round((options.metresPerSegment ?? 9) / mps));
+  // THE CAP IS WHAT ACTUALLY BINDS ON THE HERO, and at 384 it was throwing away detail the
+  // heightfield already held. The field runs 1536 samples over 8192 m — 5.33 m per sample — so
+  // a several-kilometre island spans well over a thousand of them. With the cap at 384 the
+  // loop below had to push the stride to 3 to fit, triangulating at ~16 m per edge and reading
+  // every third sample: a 3x linear, 9x areal loss against data that was already baked and
+  // paid for. 576 admits stride 2 on an island of that size, which is where the return is —
+  // stride 1 would put a single island at ~2.5M triangles for detail finer than the field can
+  // describe.
+  const cap = options.maxSegments ?? 576;
+  // Default matched to the field's own pitch rather than sitting above it. At 9 m against a
+  // 5.33 m field this asked for less resolution than existed, which the cap then made worse;
+  // asking for the field's pitch means the SMALL islands — the ones the cap never reaches —
+  // get their full detail, and they are cheap because they are small.
+  let stride = Math.max(1, Math.round((options.metresPerSegment ?? 5.5) / mps));
   let nx = 0;
   let nz = 0;
   for (;;) {

@@ -62,6 +62,18 @@ export const SKY = Object.freeze({
   cloudLit: s(0xebedea, 'Cloud lit face', 'Near-white, very slightly warm/green-grey.'),
   cloudShadow: s(0x8cbdcb, 'Cloud shadow face', 'Clouds shade TOWARDS the sky cyan, never towards grey.'),
   cloudShadowAlt: s(0x9bb5a8, 'Cloud shadow face (alt)'),
+  /**
+   * WHAT SHADOW IS THE COLOUR OF. The one hex every surface's shadow band leans toward.
+   *
+   * It lives in SKY because that is the argument for it: a surface out of the sun is not
+   * unlit, it is lit by the sky instead, so its shadow takes the sky's colour rather than a
+   * darker version of its own. That is the physical reading of 00 §3 rule 2's "hue shift, not
+   * base * 0.5", and it is why shadows in the reference frames are blue on warm stone.
+   *
+   * Dark and properly chromatic — sat 0.75 at lightness 0.15. A desaturated navy would land
+   * every shadow back on the grey this exists to get rid of.
+   */
+  shadowDeep: s(0x0a2a45, 'Shadow core (sky blue, dark)', 'Shadows lean TOWARDS this, never towards grey.'),
 });
 
 /* ------------------------------------------------------------------ *

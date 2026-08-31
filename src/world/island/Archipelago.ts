@@ -81,7 +81,11 @@ export class Archipelago {
     this.coverUniforms = makeCoverUniforms(this.cover, this.field);
 
     const shares = footprintShare(this.specs);
-    const base = config.metresPerSegment ?? 9;
+    // 5.5 m, matched to the field's 5.33 m sample pitch rather than the 9 m this used to ask
+    // for. The old figure requested a mesh coarser than the data behind it, so islands were
+    // rendered at two-thirds of the shape they had already been given — see IslandMesh, where
+    // the cap then took another third off the hero on top of that.
+    const base = config.metresPerSegment ?? 5.5;
     for (let i = 0; i < this.specs.length; i++) {
       // An island that generated entirely below sea level has no land box and nothing to draw.
       if (!this.field.islandBounds[i]) continue;

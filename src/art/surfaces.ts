@@ -22,6 +22,23 @@ export interface SurfacePreset {
   readonly shadowTint: number;
   /** How far the shadow band leans into shadowTint vs base*0.82. 04 §8.2: 0.85. */
   readonly shadowTintMix: number;
+  /**
+   * How far this surface's shadow tint leans toward `SKY.shadowDeep` — the sky-blue core.
+   *
+   * The second half of rule 2, and the reason shadows read as blue rather than as grey. A
+   * surface out of the sun is lit by the sky, so its shadow tends toward the sky's colour;
+   * this is how much of that each material takes. It is PER SURFACE and not a global constant
+   * because two rows here carry explicit instructions that a global would trample:
+   *
+   *   aircraft   0    "NEVER blue-shifted — the plane must stay hot" (04 §8.3)
+   *   terracotta 0.2  brickShadow is "warm, never desaturated to grey" — measured, a full
+   *                   lean takes it to sat 0.11, which is that failure exactly
+   *   openSea    0    its tint is already deeper and bluer than the core, so leaning toward
+   *                   it would LIGHTEN the sea's shadow, which is the opposite of the point
+   *
+   * The rest lean hard, because they are the ones that were reading grey.
+   */
+  readonly shadowCool: number;
   /** Quantised band count, 2-4 (00 §3 rule 1). */
   readonly rampSteps: number;
   /** Rim/backlight accent. */
@@ -41,6 +58,8 @@ export const SURFACES = Object.freeze({
     baseColor: SEA.deepSunlit.hex, // #024892
     shadowTint: SEA.shadow.hex, // #012438 — violet-navy per 00 §3
     shadowTintMix: 0.85,
+    // Already deeper and bluer than the core; leaning would lighten it.
+    shadowCool: 0,
     rampSteps: 3,
     rimColor: SEA.crestHigh.hex, // #e7e6eb foam-white
     // ZERO, and the old note beside it said why before the ocean existed: "rim handed off to
@@ -60,6 +79,8 @@ export const SURFACES = Object.freeze({
     baseColor: SKY.cloudLit.hex, // #ebedea
     shadowTint: SKY.cloudShadow.hex, // #8cbdcb — cyan, NEVER grey
     shadowTintMix: 0.85,
+    // Cloud shadow is already cyan by design; a light lean keeps it there and darkens it.
+    shadowCool: 0.35,
     rampSteps: 2,
     rimColor: SKY.zenith.hex, // #1ca6c7
     rimStrength: 0.1,
@@ -72,6 +93,7 @@ export const SURFACES = Object.freeze({
     baseColor: LAND.canopyMid.hex, // #45764e
     shadowTint: LAND.forestDense.hex, // #1f4e38 — blue-green shifted
     shadowTintMix: 0.85,
+    shadowCool: 0.7,
     rampSteps: 3,
     rimColor: SKY.cloudShadow.hex, // #8cbdcb
     rimStrength: 0.2,
@@ -81,11 +103,27 @@ export const SURFACES = Object.freeze({
   limestone: preset({
     label: 'Limestone cliff',
     baseColor: LAND.limestoneLit.hex, // #cbc5ad
-    shadowTint: LAND.limestoneStrata.hex, // #726f60 — warm brown-grey
+    // WAS `limestoneStrata` #726f60, and that was the wrong hex off the right shelf. Strata is
+    // the colour of the rock's BEDDING — the horizontal banding `uStrataStrength` draws on a
+    // cliff face — not the colour of limestone out of the sun, and the palette carries
+    // `limestoneShadow` and `limestoneShadowDeep` for that, both unused until now. Measured,
+    // the strata hex put the shadow band at #7a7767: saturation 0.08 and lightness 0.44, which
+    // is a mid grey, and limestone is most of the island's surface area.
+    shadowTint: LAND.limestoneShadow.hex, // #534a40
     shadowTintMix: 0.85,
+    shadowCool: 0.75,
     rampSteps: 4, // strata read best with more bands (04 §2.3)
     rimColor: SKY.horizonHazeFar.hex, // #d0dbdf
-    rimStrength: 0.15,
+    // DOWN TO A TENTH, 0.15 -> 0.015. The rim is the only thing in the gouache ramp that reads
+    // as shine — there is no specular lobe anywhere in this renderer — so it is the whole of
+    // what "shiny" means on the islands. This row drives the terrain AND the long-grass
+    // overlay, which between them are every land surface that goes through the ramp, so one
+    // number covers the lot.
+    //
+    // Left present rather than zeroed: 00 §3 rule 4 wants a thin painted edge where land meets
+    // sky, and at 0.015 that edge survives as a hint on the silhouette instead of a sheen
+    // across the slopes. Zero is one keystroke away if the hint is unwanted too.
+    rimStrength: 0.015,
     rimPower: 3.5,
   }),
 
@@ -94,6 +132,8 @@ export const SURFACES = Object.freeze({
     baseColor: LAND.terracotta.hex, // #a42a08
     shadowTint: LAND.brickShadow.hex, // #654532 — warm, never desaturated to grey
     shadowTintMix: 0.85,
+    // Low on purpose: brickShadow must stay warm, and a full lean measures sat 0.11.
+    shadowCool: 0.2,
     rampSteps: 2,
     rimColor: 0x000000,
     rimStrength: 0, // reserve red: no rim stealing the accent (04 §2.3)
@@ -105,6 +145,8 @@ export const SURFACES = Object.freeze({
     baseColor: ACCENT.planeVermilion.hex, // #c63427
     shadowTint: 0x6e1c12, // warm-dark, NEVER blue-shifted — the plane must stay hot
     shadowTintMix: 0.85,
+    // Zero, and it must stay zero. See the note on this preset.
+    shadowCool: 0,
     rampSteps: 3,
     rimColor: SEA.crestHigh.hex, // #e7e6eb thin edge highlight only
     rimStrength: 0.1,

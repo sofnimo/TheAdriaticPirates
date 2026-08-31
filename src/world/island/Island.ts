@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { globalUniforms, shadowUniforms } from '../../render/shading/ShadingUniforms';
+import { SKY } from '../../art/palette';
 import { SURFACES } from '../../art/surfaces';
 import { ISLAND_COVER } from '../../art/islandCover';
 import { buildIslandMesh, type IslandMeshResult } from './IslandMesh';
@@ -81,6 +82,8 @@ export class Island {
       uRampSteps: { value: surface.rampSteps },
       uShadowTint: { value: new THREE.Color(surface.shadowTint) },
       uShadowTintMix: { value: surface.shadowTintMix },
+      uShadowDeep: { value: new THREE.Color(SKY.shadowDeep.hex) },
+      uShadowCool: { value: surface.shadowCool },
       uRimColor: { value: new THREE.Color(surface.rimColor) },
       uRimPower: { value: surface.rimPower },
       uRimStrength: { value: surface.rimStrength },
