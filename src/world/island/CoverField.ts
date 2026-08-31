@@ -31,22 +31,11 @@ import type { IslandField } from './IslandField';
  * same boundary for every tier and does not have to be maintained three times.
  */
 
-/**
- * The low end of `longGrassWeight`'s breakup term in land_cover.glsl, `mix(0.75, 1.25, ...)`.
- *
- * Carried here rather than derived, because a .ts file and a .glsl file cannot share a
- * constant. If that mix ever changes, this follows it: it is what makes "wooded" a subset of
- * "grass that is actually drawn" rather than a subset of "grass on average".
- */
-const LONG_GRASS_BREAKUP_MIN = 0.75;
-
-/**
- * Half-width of the treeline's fade at the edge of a long-grass patch, in mask units.
- *
- * Narrow on purpose. This is a boundary the eye can see — a grove stopping where the grass
- * stops — and a wide blend would put a halo of thinning trees on ground that reads as bare.
- */
-const GRASS_GATE_SOFTNESS = 0.08;
+// LONG_GRASS_BREAKUP_MIN and GRASS_GATE_SOFTNESS lived here. Both existed only to make the
+// treeline a subset of the grass that is actually drawn — the first mirrored the breakup term
+// in land_cover.glsl so the bake could gate on the worst case rather than the mean, the second
+// set how sharply a grove stopped at a patch edge. With tier C removed nothing consults either,
+// so they are deleted rather than left as constants that look load-bearing and are not.
 
 export interface CoverFieldOptions {
   /** Samples per side. Defaults to half the elevation field's, which is ample: these are
@@ -64,8 +53,6 @@ export class CoverField {
   readonly dry: Float32Array;
   /** Tier B long grass occupancy, 0-1. */
   readonly long: Float32Array;
-  /** Tier C forest weight, 0-1. The single source of truth for where forest exists (§7.1). */
-  readonly forest: Float32Array;
   /** 0-1 terrain veto, shared by all three tiers. */
   readonly suitability: Float32Array;
 
@@ -83,7 +70,6 @@ export class CoverField {
     const count = n * n;
     this.dry = new Float32Array(count);
     this.long = new Float32Array(count);
-    this.forest = new Float32Array(count);
     this.suitability = new Float32Array(count);
     this.slope = new Float32Array(count);
     this.distanceToSea = new Float32Array(count);
@@ -117,22 +103,6 @@ export class CoverField {
     return this.island.originZ + iz * this.metresPerSample;
   }
 
-  /**
-   * Tier C weight at a world point, nearest-sample.
-   *
-   * The hull scatter reads this rather than the texture, so CPU placement and the shader's own
-   * `forestWeight` are looking at the same field. Nearest rather than bilinear on purpose: a
-   * hull either is or is not placed, and interpolating only moves a grove edge by half a
-   * sample while costing four taps per candidate.
-   */
-  forestAt(x: number, z: number): number {
-    const n = this.resolution;
-    const ix = Math.round((x - this.island.originX) / this.metresPerSample);
-    const iz = Math.round((z - this.island.originZ) / this.metresPerSample);
-    if (ix < 0 || iz < 0 || ix >= n || iz >= n) return 0;
-    return this.forest[iz * n + ix]!;
-  }
-
   /** Re-run against the current `ISLAND_COVER` values. Structural edits call this. */
   bake(): void {
     const cfg = ISLAND_COVER;
@@ -146,7 +116,7 @@ export class CoverField {
     // half a sigma, which is a patch with a readable outline rather than a soft cloud.
     const dryCut = coverageThreshold(cfg.dryCoverage);
     const longCut = coverageThreshold(cfg.longGrassCoverage);
-    const forestCut = coverageThreshold(cfg.forestCoverage);
+
 
     for (let iz = 0; iz < n; iz++) {
       const z = this.worldZ(iz);
@@ -155,7 +125,7 @@ export class CoverField {
         const x = this.worldX(ix);
 
         if (this.distanceToSea[i]! <= 0) {
-          this.dry[i] = 0; this.long[i] = 0; this.forest[i] = 0; this.suitability[i] = 0;
+          this.dry[i] = 0; this.long[i] = 0; this.suitability[i] = 0;
           continue;
         }
 
@@ -188,51 +158,15 @@ export class CoverField {
             longRaw + cfg.moistureBias * 0.5 * (moisture - 0.5)) * suit,
         );
 
-        // --- B: forest, own seed, broad scale ---------------------------------------------
-        const forestRaw = fbm(x, z, seed ^ 0xf0e5, cfg.forestScale, 3);
-        // Oaks want shelter: §7.1's "inlandOrSheltered". The exposure field already knows
-        // which flank the bora scours, so the forest reads it rather than re-deriving it.
-        const shelter = clamp01(0.62 - this.exposureAt(ix, iz) * 0.38);
-        // OAKS STAND IN THE LONG GRASS AND NOWHERE ELSE.
-        //
-        // This is the one place tier C is deliberately NOT decorrelated from tier B. The rest
-        // of the independence rule still holds — the forest keeps its own seed and its own
-        // 420 m scale, so its regions are its own shape — but that shape is then cut to the
-        // grass. What §3.1 actually warns against is thresholding ONE noise three times, which
-        // draws visibly nested contours; two independent noises intersected draw no such
-        // family of curves, only the ragged overlap of two unrelated patterns.
-        //
-        // Gated on the WORST-CASE breakup, not on the mean. `longGrassWeight` in
-        // land_cover.glsl raggeds the patch edges with `mix(0.75, 1.25, breakup)` and the
-        // overlay then discards below `uLongGrassThreshold`, so a texel whose baked occupancy
-        // only just clears that threshold is grass in some places and bare in others according
-        // to a noise this bake never sees. Requiring it to clear even at 0.75 keeps the crowns
-        // over grass that is actually drawn, instead of leaving a fringe of trees standing on
-        // bare ground wherever the breakup happened to cut the patch back.
-        // The threshold is the LOWER bound of the blend, not its midpoint. Centring it there
-        // let the fade reach below the line and put a handful of crowns on ground the overlay
-        // was not guaranteed to be drawing — few enough to miss by eye, which is exactly why
-        // it is worth pinning: below this occupancy the gate is zero, not merely small.
-        const grassGate = smoothstep(
-          cfg.longGrassThreshold,
-          cfg.longGrassThreshold + GRASS_GATE_SOFTNESS,
-          this.long[i]! * LONG_GRASS_BREAKUP_MIN,
-        );
-        this.forest[i] = clamp01(
-          smoothstep(forestCut - 0.14, forestCut + 0.14,
-            forestRaw + cfg.moistureBias * (moisture - 0.5)) * suit * shelter * grassGate,
-        );
+        // NO B CHANNEL. The forest mask lived here — its own seed and its own broad scale,
+        // then cut to the long grass so oaks stood in it and nowhere else. Tier C is gone, and
+        // with it the only thing that ever read this: the hull scatter placed crowns from it,
+        // and `land_color.glsl` folded it into the ground as the far-LOD handoff. Both are
+        // removed, so baking it would be computing a field for nobody.
       }
     }
 
     this.upload();
-  }
-
-  private exposureAt(ix: number, iz: number): number {
-    const s = this.island.resolution / this.resolution;
-    const jx = Math.min(this.island.resolution - 1, Math.round(ix * s));
-    const jz = Math.min(this.island.resolution - 1, Math.round(iz * s));
-    return this.island.exposure[jz * this.island.resolution + jx]!;
   }
 
   /**
@@ -304,7 +238,9 @@ export class CoverField {
     for (let i = 0; i < this.dry.length; i++) {
       data[i * 4 + 0] = Math.round(this.dry[i]! * 255);
       data[i * 4 + 1] = Math.round(this.long[i]! * 255);
-      data[i * 4 + 2] = Math.round(this.forest[i]! * 255);
+      // B: unused since tier C was removed. Written as zero rather than left uninitialised,
+      // so a stale value cannot be sampled by anything that still reads the channel.
+      data[i * 4 + 2] = 0;
       data[i * 4 + 3] = Math.round(this.suitability[i]! * 255);
     }
     this.texture.needsUpdate = true;

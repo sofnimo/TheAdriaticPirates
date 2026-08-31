@@ -2,10 +2,7 @@ import * as THREE from 'three';
 import { globalUniforms, shadowUniforms } from '../../render/shading/ShadingUniforms';
 import { SKY } from '../../art/palette';
 import { SURFACES } from '../../art/surfaces';
-import { ISLAND_COVER } from '../../art/islandCover';
 import { buildIslandMesh, type IslandMeshResult } from './IslandMesh';
-import { buildCanopy, type CanopyResult } from './Canopy';
-import type { CoverField } from './CoverField';
 import type { IslandBounds, IslandField } from './IslandField';
 import type { IslandSpec } from './IslandSpec';
 import type { CoverUniforms } from './coverUniforms';
@@ -15,17 +12,16 @@ import TERRAIN_VERT from './terrain.vert.glsl';
 import TERRAIN_FRAG from './terrain.frag.glsl';
 import OVERLAY_VERT from './overlay.vert.glsl';
 import OVERLAY_FRAG from './overlay.frag.glsl';
-import CANOPY_VERT from './canopy.vert.glsl';
-import CANOPY_DEPTH_VERT from './canopy.depth.vert.glsl';
-import CANOPY_DEPTH_FRAG from './canopy.depth.frag.glsl';
-import CANOPY_FRAG from './canopy.frag.glsl';
 
 /**
- * ONE ISLAND'S DRAW CALLS — the four-tier stack of `05 §3`, assembled.
+ * ONE ISLAND'S DRAW CALLS — the ground tiers of `05 §3`, assembled.
  *
  *   A0/A1  the terrain mesh, base colour and dried-grass sublayer   (`terrain.*.glsl`)
  *   B      the raised long-grass overlay, on the SAME geometry      (`overlay.*.glsl`)
- *   C      instanced oak canopy hulls                               (`canopy.*.glsl`)
+ *
+ * TIER C, THE INSTANCED OAK CANOPY, HAS BEEN REMOVED. The islands carry no trees at all: no
+ * hulls, no leaves, no forest cover mask, and no forest tint baked into the ground colour.
+ * What is left is rock, grass, and the long-grass overlay standing in it.
  *
  * TIER B SHARES THE BUFFER, IT DOES NOT COPY IT. `overlayMesh` is a second `THREE.Mesh` over
  * the very same `BufferGeometry` object as the terrain. §5 lists "overlay seams or hovers" as
@@ -33,7 +29,7 @@ import CANOPY_FRAG from './canopy.frag.glsl';
  * height or LOD; two meshes over one buffer cannot disagree, because there is one set of
  * vertices. The separation between them is the vertex shader's normal offset and nothing else.
  *
- * ALL THREE MATERIALS SHARE ONE UNIFORM OBJECT GRAPH. The cover block, the shore block and the
+ * BOTH MATERIALS SHARE ONE UNIFORM OBJECT GRAPH. The cover block, the shore block and the
  * global sky/sun block are assigned by reference, so a debug-UI edit moves every tier in the
  * same frame. §5's "patch boundaries swim" has the same root cause as the seam: layers reading
  * different numbers for the same field.
@@ -41,14 +37,12 @@ import CANOPY_FRAG from './canopy.frag.glsl';
 
 export interface IslandOptions {
   readonly field: IslandField;
-  readonly cover: CoverField;
   readonly coverUniforms: CoverUniforms;
-  /** Index into the field's layout order. Bounds and canopy ownership key off it. */
+  /** Index into the field's layout order. Bounds key off it. */
   readonly index: number;
   /** Metres per mesh segment. The triangle budget is spent through this. */
   readonly metresPerSegment?: number;
   readonly maxSegments?: number;
-  readonly maxHulls?: number;
 }
 
 export class Island {
@@ -57,15 +51,12 @@ export class Island {
   readonly meshInfo: IslandMeshResult;
   readonly terrainMesh: THREE.Mesh;
   readonly overlayMesh: THREE.Mesh;
-  readonly canopy: CanopyResult;
 
   readonly terrainMaterial: THREE.ShaderMaterial;
   readonly overlayMaterial: THREE.ShaderMaterial;
-  readonly canopyMaterial: THREE.ShaderMaterial;
-  readonly canopyDepthMaterial: THREE.ShaderMaterial;
 
   constructor(options: IslandOptions) {
-    const { field, cover, coverUniforms, index } = options;
+    const { field, coverUniforms, index } = options;
     this.spec = field.specs[index] ?? field.spec;
 
     const bounds: IslandBounds | undefined = field.islandBounds[index] ?? undefined;
@@ -76,8 +67,7 @@ export class Island {
     });
 
     const surface = SURFACES.limestone ?? SURFACES.openSea;
-    // The ramp row every land tier shares. Terrain and overlay both read it; the canopy does
-    // not go through the ramp at all (§8.2), so it never sees these.
+    // The ramp row both land tiers share.
     const rampUniforms: CoverUniforms = {
       uRampSteps: { value: surface.rampSteps },
       uShadowTint: { value: new THREE.Color(surface.shadowTint) },
@@ -120,17 +110,6 @@ export class Island {
       polygonOffsetUnits: -1,
     });
 
-    this.canopyMaterial = new THREE.ShaderMaterial({
-      uniforms: shared(),
-      vertexShader: CANOPY_VERT,
-      fragmentShader: CANOPY_FRAG,
-      // A dome has no back faces worth drawing, but its rim is open and a hull straddling a
-      // ridge can be seen through that opening from below. Cheaper to draw both sides of a
-      // seven-sided dome than to close it.
-      side: THREE.DoubleSide,
-      toneMapped: false,
-    });
-
     this.terrainMesh = new THREE.Mesh(this.meshInfo.geometry, this.terrainMaterial);
     this.terrainMesh.castShadow = true;
     this.terrainMesh.receiveShadow = true;
@@ -142,27 +121,8 @@ export class Island {
     // Drawn after the base, so its discarded fragments leave the base's depth untouched.
     this.overlayMesh.renderOrder = 1;
 
-    // THE SHADOW PASS SHARES THE UNIFORM BLOCK. It has to: leaf placement reads `uLeafSize`
-    // and `uLeafAspect`, and a depth material with its own copies would drift the moment
-    // anything moved one of them — leaves would cast shadows from a size they are not drawn
-    // at. Built here rather than inside buildCanopy because this is where the block lives.
-    this.canopyDepthMaterial = new THREE.ShaderMaterial({
-      uniforms: shared(),
-      vertexShader: CANOPY_DEPTH_VERT,
-      fragmentShader: CANOPY_DEPTH_FRAG,
-      side: THREE.DoubleSide,
-    });
-
-    this.canopy = buildCanopy(cover, {
-      material: this.canopyMaterial,
-      depthMaterial: this.canopyDepthMaterial,
-      owner: index,
-      ...(options.maxHulls !== undefined ? { maxHulls: options.maxHulls } : {}),
-    });
-    this.canopy.mesh.renderOrder = 2;
-
     this.group.name = this.spec.name;
-    this.group.add(this.terrainMesh, this.overlayMesh, this.canopy.mesh);
+    this.group.add(this.terrainMesh, this.overlayMesh);
   }
 
   get bounds(): IslandMeshResult['bounds'] {
@@ -170,7 +130,7 @@ export class Island {
   }
 
   get triangles(): number {
-    return this.meshInfo.triangles + this.canopy.triangles;
+    return this.meshInfo.triangles;
   }
 
   /**
@@ -182,32 +142,20 @@ export class Island {
    * land are reading the same run-up phase rather than two copies of it.
    */
   attachShore(shore: ShoreUniforms): void {
-    for (const material of [this.terrainMaterial, this.overlayMaterial, this.canopyMaterial]) {
+    for (const material of [this.terrainMaterial, this.overlayMaterial]) {
       Object.assign(material.uniforms, shore);
       material.needsUpdate = true;
     }
   }
 
-  /** Tier B is expensive and the debug UI turns it off; tier C likewise. */
-  setTierVisibility(overlay: boolean, canopy: boolean): void {
+  /** Tier B is expensive and the debug UI turns it off. */
+  setTierVisibility(overlay: boolean): void {
     this.overlayMesh.visible = overlay;
-    this.canopy.mesh.visible = canopy;
   }
 
   dispose(): void {
     this.meshInfo.geometry.dispose();
-    this.canopy.mesh.geometry.dispose();
     this.terrainMaterial.dispose();
     this.overlayMaterial.dispose();
-    this.canopyMaterial.dispose();
-    // The shadow-pass material is owned here too. Missed, it leaks a compiled program per
-    // island on every structural edit — and the canopy is re-scattered by a slider, so that is
-    // once per drag, not once per session.
-    this.canopyDepthMaterial.dispose();
   }
-}
-
-/** The hull count the whole tile is allowed, divided by land area. Used by `Archipelago`. */
-export function hullBudget(share: number): number {
-  return Math.max(200, Math.floor(ISLAND_COVER.canopyMaxHulls * share));
 }

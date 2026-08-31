@@ -5,7 +5,6 @@ import { DepthField } from '../world/depth/DepthField';
 import { Ocean } from '../world/ocean/Ocean';
 import { Archipelago } from '../world/island/Archipelago';
 import { TEST_ISLAND_SEED } from '../world/island/IslandSpec';
-import type { CoverField } from '../world/island/CoverField';
 import type { IslandField } from '../world/island/IslandField';
 import { ShoreAtlas } from '../world/shore/ShoreAtlas';
 import { makeShoreUniforms, syncShoreSwell, updateFoamLOD, type ShoreUniforms } from '../world/shore/shoreUniforms';
@@ -28,14 +27,13 @@ import { Walker } from '../game/walk/Walker';
  *   skim     — low pass over open water, framed like image-4.jpg for the glint measurement
  *   island   — three-quarter aerial on the island, 00 §3 rule 9's default camera
  *   profile  — low and across the spine, showing the cliffed and sheltered flanks together
- *   canopy   — low across the densest wooded slope, what the vegetation gate measures on
  *   walk     — on foot on the hero island, eye height, gravity and a climb limit
  *   free     — hands the camera to FreeCamera and leaves it alone
  *   topdown / low / high — the camera envelope, for aliasing and fade checks
  */
 
 export type OceanViewName =
-  | 'cove' | 'shelf' | 'skim' | 'island' | 'profile' | 'canopy' | 'shore' | 'walk'
+  | 'cove' | 'shelf' | 'skim' | 'island' | 'profile' | 'shore' | 'walk'
   | 'topdown' | 'low' | 'high' | 'cockpit' | 'free';
 
 interface ViewSpec {
@@ -76,10 +74,6 @@ const VIEWS: Record<OceanViewName, ViewSpec> = {
   // Low and across the spine, so the cliffed seaward flank and the terraced sheltered flank
   // are both in frame at once — the asymmetry of 03 §3.5 is the thing to judge here.
   profile: { position: new THREE.Vector3(120, 180, 340), target: new THREE.Vector3(-100, 70, -620) },
-  // Aimed in the constructor at the densest wooded slope the island actually has. Low and
-  // close, because the vegetation gate is asking whether the Ghibli band is banding, and a
-  // 700 m aerial resolves a canopy to a few pixels per tree where every tone is a blend.
-  canopy: { position: new THREE.Vector3(0, 120, 200), target: new THREE.Vector3(0, 60, 0) },
   // Never read. `setView('free')` returns before touching the camera; the entry exists so
   // the view name is a member of the same table as the rest and nothing has to special-case
   // it on lookup.
@@ -292,38 +286,6 @@ function walkableSpawn(field: IslandField, owner: number): { x: number; z: numbe
   return { x: bx, z: bz };
 }
 
-/**
- * The wooded texel with the most forest around it — where the canopy view is aimed.
- *
- * Scored over a neighbourhood rather than per texel: a single dense-forest texel in a field
- * of scrub is not a canopy, and framing on one would put the gate's transects across mostly
- * open ground.
- */
-function densestWoodland(cover: CoverField): { x: number; y: number; z: number } {
-  const n = cover.resolution;
-  const R = 5;
-  let best = -Infinity;
-  let bx = 0;
-  let bz = 0;
-  for (let iz = R; iz < n - R; iz += 3) {
-    for (let ix = R; ix < n - R; ix += 3) {
-      let score = 0;
-      for (let dz = -R; dz <= R; dz += R) {
-        for (let dx = -R; dx <= R; dx += R) {
-          score += cover.forest[(iz + dz) * n + (ix + dx)]!;
-        }
-      }
-      if (score > best) {
-        best = score;
-        // The cover field has its own coarser pitch; indexing it with the elevation field's
-        // would aim the camera at twice the distance from the origin it meant to.
-        bx = cover.worldX(ix);
-        bz = cover.worldZ(iz);
-      }
-    }
-  }
-  return { x: bx, y: cover.island.heightAt(bx, bz), z: bz };
-}
 
 /**
  * A SHELTERED STRETCH OF WATER TO START ON.
@@ -502,15 +464,6 @@ export class OceanTestScene {
       target: new THREE.Vector3(summit.x - 60, summit.height * 0.45, summit.z - 260),
     };
     VIEWS.skim = skimView(seaState, new THREE.Vector3(cx, 0, cz));
-
-    // Point the canopy view at the island's own densest woodland rather than at a hardcoded
-    // spot. Re-authoring the spine moves every forest patch, and a fixed camera would end up
-    // measuring the Ghibli band on a bare hillside and reporting one tone.
-    const wood = densestWoodland(this.archipelago.cover);
-    VIEWS.canopy = {
-      position: new THREE.Vector3(wood.x + 120, wood.y + 58, wood.z + 175),
-      target: new THREE.Vector3(wood.x, wood.y + 6, wood.z),
-    };
 
     // Put the camera on the most exposed stretch of the seaward coast, so the run-up band is
     // at its widest and the foam is being judged where it does the most work.

@@ -22,7 +22,6 @@ uniform vec3 cCliffStrata;
 uniform vec3 cSand;
 uniform vec3 cGrass;
 uniform vec3 cGrassDry;
-uniform vec3 cCanopyDark;
 
 uniform float uStrataMetres;
 uniform float uStrataStrength;
@@ -57,10 +56,15 @@ vec3 grassColor(vec2 worldXZ, vec4 cover) {
 /**
  * The base terrain colour.
  *
- * `forestWeight` is folded in here as §9's C3 far handoff: the low-frequency dark coverage of
- * the forest is baked into A0's own colour, using the same shadow stop the canopy hulls use.
- * That is what keeps the forest footprint identical at every LOD — when the hulls fade, the
- * ground underneath is already the right colour and nothing changes shape.
+ * THE FOREST TINT IS GONE WITH THE TREES. This used to fold `forestWeight` in here — the
+ * low-frequency dark coverage of the forest baked into A0's own colour, using the same shadow
+ * stop the canopy hulls were painted in. That was §9's C3 far handoff: it kept the forest
+ * footprint identical at every LOD, so when the hulls faded the ground underneath was already
+ * the right colour and nothing changed shape.
+ *
+ * With tier C removed it had nothing left to hand off to, and leaving it would have been worse
+ * than pointless — dark green patches shaped exactly like groves, on islands with no trees on
+ * them. A shadow cast by something that is not there.
  */
 vec3 landColor(vec3 worldPos, vec3 normal) {
   vec2 worldXZ = worldPos.xz;
@@ -69,7 +73,6 @@ vec3 landColor(vec3 worldPos, vec3 normal) {
   float inland = inlandMetres(worldXZ);
 
   vec3 color = grassColor(worldXZ, cover);
-  color = mix(color, cCanopyDark, forestWeight(worldXZ, cover, inland) * 0.55);
   color = mix(color, limestone(worldPos, normal), rockMask(worldXZ, normal, character, inland));
   color = mix(color, cSand, sandMask(worldXZ, character, inland));
   return color;

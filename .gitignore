@@ -8,3 +8,7 @@ dist/
 # repo. The parts this project actually uses are vendored under src/vendor/grassField/
 # with their licence and attribution; the clone is a local reading copy, not source.
 stylized-components/
+
+# Local scratch, never part of the tree
+.patch.pl
+bakecheck.ts

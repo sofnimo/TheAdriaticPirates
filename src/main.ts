@@ -331,7 +331,7 @@ if (sceneName === 'palette') {
 
   const viewParam = query.get('view');
   const VIEW_NAMES: OceanViewName[] = [
-    'cove', 'shelf', 'skim', 'island', 'profile', 'canopy', 'shore', 'walk',
+    'cove', 'shelf', 'skim', 'island', 'profile', 'shore', 'walk',
     'topdown', 'low', 'high', 'cockpit', 'free',
   ];
   const isView = (v: string | null): v is OceanViewName =>
@@ -756,28 +756,25 @@ if (sceneName === 'palette') {
     .onChange((v: boolean) => post.setGrainAnimateSeed(v ? 1 : 0));
 
   // --- land cover ---------------------------------------------------------------------
-  // Four folders for `05 — Distant Terrain Layering.md`'s four tiers, in the order they
-  // stack: A0 ground, A1 dried grass (a colour sublayer INSIDE A0, never its own geometry),
-  // B raised long grass, C oak canopy. Two kinds of control, and which is which is a
-  // property of what the value feeds rather than a preference:
+  // Folders for `05 — Distant Terrain Layering.md`'s tiers, in the order they stack: A0
+  // ground, A1 dried grass (a colour sublayer INSIDE A0, never its own geometry), B raised
+  // long grass. The document's tier C, the oak canopy, no longer exists — the island's trees
+  // were removed, so `tiers` below stops at long grass. Two kinds of control, and which is
+  // which is a property of what the value feeds rather than a preference:
   //
   //   LIVE        colours, blend widths, thresholds, offsets. Bound on `onChange`, so they
   //               move under the cursor — they are uniform writes and cost nothing.
-  //   STRUCTURAL  coverage, patch scale, hull size. Bound on `onFinishChange`, because each
-  //               re-bakes the cover masks and re-scatters the canopy, and doing that once
-  //               per mouse-move event makes the slider unusable.
+  //   STRUCTURAL  coverage, patch scale. Bound on `onFinishChange`, because each re-bakes the
+  //               cover masks and re-scatters the long grass, and doing that once per
+  //               mouse-move event makes the slider unusable.
   //
   // The fields marked STRUCTURAL in `art/islandCover.ts` are exactly the ones wired to
   // `rebuild` here; that comment and this binding have to agree.
   const cover = ISLAND_COVER;
-  const tiers = { base: true, longGrass: true, canopy: true, hulls: 0 };
+  const tiers = { base: true, longGrass: true };
 
   const syncLive = (): void => test.archipelago.refreshCover(false);
-  const rebuild = (): void => {
-    test.archipelago.refreshCover(true);
-    tiers.hulls = test.archipelago.hulls;
-    hullsCtl.updateDisplay();
-  };
+  const rebuild = (): void => test.archipelago.refreshCover(true);
 
   // ---- the island generator ---------------------------------------------------------------
   // The seed is the whole archipelago: every spine, width, cut, doline and beach is a pure
@@ -865,7 +862,7 @@ if (sceneName === 'palette') {
   // ---- tier B: raised long grass ----------------------------------------------------------
   const longFolder = debug.gui.addFolder('Tier B — long grass');
   longFolder.add(tiers, 'longGrass').name('visible')
-    .onChange((v: boolean) => test.archipelago.setTierVisibility(v, tiers.canopy));
+    .onChange((v: boolean) => test.archipelago.setTierVisibility(v));
   longFolder.addColor(cover, 'longGrass').name('colour').onChange(syncLive);
   longFolder.add(cover, 'longGrassOffset', 0, 4, 0.05).name('lift off ground (m)').onChange(syncLive);
   longFolder.add(cover, 'longGrassThreshold', 0, 1, 0.01).name('alpha cut').onChange(syncLive);
@@ -873,54 +870,6 @@ if (sceneName === 'palette') {
   longFolder.add(cover, 'longGrassSandMargin', 0, 60, 0.5).name('clearance off sand (m)').onChange(syncLive);
   longFolder.add(cover, 'longGrassCoverage', 0, 1, 0.01).name('coverage').onFinishChange(rebuild);
   longFolder.add(cover, 'longGrassScale', 15, 400, 5).name('patch scale (m)').onFinishChange(rebuild);
-
-  // ---- tier C: oak canopy -----------------------------------------------------------------
-  const canopyFolder = debug.gui.addFolder('Tier C — oak canopy');
-  canopyFolder.add(tiers, 'canopy').name('visible')
-    .onChange((v: boolean) => test.archipelago.setTierVisibility(tiers.longGrass, v));
-  canopyFolder.addColor(cover, 'canopyDark').name('shadow stop').onChange(syncLive);
-  canopyFolder.addColor(cover, 'canopyMid').name('mid stop').onChange(syncLive);
-  canopyFolder.addColor(cover, 'canopyLight').name('lit stop').onChange(syncLive);
-  canopyFolder.add(cover, 'normalSpread', 0, 1, 0.01).name('normal spread (0.35-0.75)').onChange(syncLive);
-  canopyFolder.add(cover, 'splitMid', -1, 1, 0.01).name('mid threshold (0.15)').onChange(syncLive);
-  canopyFolder.add(cover, 'splitLit', -1, 1, 0.01).name('lit threshold (0.45)').onChange(syncLive);
-  canopyFolder.add(cover, 'dabDensity', 0, 0.4, 0.005).name('lit dab coverage (0.08)').onChange(syncLive);
-  canopyFolder.add(cover, 'dabScale', 4, 120, 1).name('dab scale (m)').onChange(syncLive);
-  // ---- the leaves ---------------------------------------------------------------------
-  // Size, aspect, fade and normal mix are LIVE: they only move blades that already exist, so
-  // they update the uniform block. Count and dome inset are baked into the crown geometry and
-  // take a rebuild.
-  const leafFolder = canopyFolder.addFolder('leaves');
-  leafFolder.add(cover, 'leafSize', 0.5, 20, 0.25).name('blade size (m)').onChange(syncLive);
-  leafFolder.add(cover, 'leafAspect', 1, 6, 0.1).name('blade long:short').onChange(syncLive);
-  // The §8.1 lever. At 0 every blade takes the crown's smooth normal and the tier lights
-  // exactly as it did before leaves existed; at 1 each blade answers the sun on its own.
-  leafFolder.add(cover, 'leafNormalMix', 0, 1, 0.01).name('per-leaf sun response').onChange(syncLive);
-  leafFolder.add(cover, 'leafFadeStart', 20, 1500, 10).name('fade from (m)').onChange(syncLive);
-  leafFolder.add(cover, 'leafFadeEnd', 40, 3000, 10).name('gone by (m)').onChange(syncLive);
-  // COSTS TRIANGLES, and the tier is inside a probe-gated 1.2M budget: a crown is 42 triangles
-  // plus two per leaf, so this is the tier's main cost lever. Rebuilds the crown geometry.
-  leafFolder.add(cover, 'leavesPerHull', 0, 64, 1).name('leaves per crown').onFinishChange(rebuild);
-  leafFolder.add(cover, 'domeInset', 0.5, 1, 0.01).name('dome inset').onFinishChange(rebuild);
-
-  canopyFolder.add(cover, 'forestThreshold', 0, 1, 0.01).name('treeline threshold').onChange(syncLive).onFinishChange(rebuild);
-  canopyFolder.add(cover, 'forestSandMargin', 0, 120, 1).name('clearance off sand (m)').onChange(syncLive);
-  canopyFolder.add(cover, 'forestCoverage', 0, 1, 0.01).name('coverage').onFinishChange(rebuild);
-  canopyFolder.add(cover, 'forestScale', 60, 1200, 10).name('grove scale (m)').onFinishChange(rebuild);
-  canopyFolder.add(cover, 'canopyCellSize', 16, 200, 2).name('scatter cell (m)').onFinishChange(rebuild);
-  canopyFolder.add(cover, 'hullsPerCell', 1, 6, 1).name('hulls per cell').onFinishChange(rebuild);
-  canopyFolder.add(cover, 'hullRadius', 3, 60, 0.5).name('crown radius (m)').onFinishChange(rebuild);
-  canopyFolder.add(cover, 'hullHeight', 2, 40, 0.5).name('crown height (m)').onFinishChange(rebuild);
-  canopyFolder.add(cover, 'hullJitter', 0, 1, 0.01).name('size variation').onFinishChange(rebuild);
-  canopyFolder.add(cover, 'canopyMaxHulls', 1000, 120000, 1000).name('hull cap').onFinishChange(rebuild);
-  tiers.hulls = test.archipelago.hulls;
-  // THE FIRST THING TO READ when the forest looks empty. It separates the two very different
-  // reasons a tree can be missing: zero here means the scatter placed nothing and the answer is
-  // in the cover gates below (oaks stand in the long grass and nowhere else, so the long-grass
-  // thresholds bound the forest before any forest setting applies); a healthy number here with
-  // nothing on screen means the crowns exist and something downstream — the leaf fade, tier
-  // visibility, the camera being past them — is hiding them.
-  const hullsCtl = canopyFolder.add(tiers, 'hulls').name('hulls placed').disable();
 
   // ---- shared suitability ------------------------------------------------------------------
   // One veto, three tiers (§7.1). It lives in its own folder because moving it moves every

@@ -16,7 +16,7 @@
 // screen space; a mask that moves with the camera shimmers under flight.
 // =====================================================================
 
-uniform sampler2D uCoverMap;       // R dry grass, G long grass, B forest, A suitability
+uniform sampler2D uCoverMap;       // R dry grass, G long grass, B unused, A suitability
 uniform vec2 uCoverOrigin;
 uniform float uCoverSize;
 
@@ -44,8 +44,6 @@ uniform float uLongGrassThreshold;
 uniform float uLongGrassBreakupScale;
 uniform float uLongGrassSandMargin;
 
-uniform float uForestThreshold;
-uniform float uForestSandMargin;
 
 vec4 sampleCover(vec2 worldXZ) {
   return texture2D(uCoverMap, (worldXZ - uCoverOrigin) / uCoverSize);
@@ -118,10 +116,4 @@ float longGrassWeight(vec2 worldXZ, vec4 cover, float inland) {
   float breakup = fbm2(worldXZ / max(uLongGrassBreakupScale, 1.0) + 37.1);
   float margin = smoothstep(uLongGrassSandMargin, uLongGrassSandMargin + 12.0, inland);
   return cover.g * mix(0.75, 1.25, breakup) * margin;
-}
-
-/** Tier C weight. §7.1: continuous, so density and the LOD handoff stay stable. */
-float forestWeight(vec2 worldXZ, vec4 cover, float inland) {
-  float margin = smoothstep(uForestSandMargin, uForestSandMargin + 20.0, inland);
-  return cover.b * margin;
 }
