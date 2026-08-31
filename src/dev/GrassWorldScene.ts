@@ -5,7 +5,7 @@ import { GrassField } from './grass/GrassField';
 import { LIGHTING_DEFAULTS, type LightingParams } from './grass/grassParams';
 import { DepthField } from '../world/depth/DepthField';
 import { Ocean } from '../world/ocean/Ocean';
-import type { SeaStateName } from '../art/seaStates';
+import { DEFAULT_SEA_STATE, type SeaStateName } from '../art/seaStates';
 import { ModelStage } from './ModelStage';
 import { buildWorldSkirt } from './grass/worldSkirt';
 import { ToonShading, TOON_DEFAULT_STEPS } from './toonShading';
@@ -316,7 +316,10 @@ export class GrassWorldScene {
    * Builds everything that needs an async load: the grass GLB and its textures,
    * then the sea that shelves against it, then the model stage.
    */
-  async load(seaState: SeaStateName = 'breeze', withTown = true): Promise<void> {
+  // Defaults to the project's own DEFAULT_SEA_STATE rather than a literal. This read 'breeze',
+  // which is not one of the three states SEA_STATES defines, so any caller relying on the
+  // default handed Ocean a name it could not look up and threw before the scene existed.
+  async load(seaState: SeaStateName = DEFAULT_SEA_STATE, withTown = true): Promise<void> {
     // A tile of area, measured off the GLB's own ground quad so "eight tiles"
     // means the same thing it did before the field became procedural.
     const layout = worldLayout(withTown);

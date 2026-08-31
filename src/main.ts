@@ -84,10 +84,26 @@ pipelineFolder
     engine.renderer.toneMapping = v === SABOTAGE ? THREE.ACESFilmicToneMapping : RENDERER_CONTRACT.toneMapping;
     runGate();
   });
+// GRASS WORLD IS IN THE LIST BUT IT IS NOT A `?scene=`, and the difference is deliberate.
+//
+// The other three are branches inside this file, selected by query string on the same page.
+// The grass world is its own entry point, and grassworld.ts explains why: it runs a completely
+// different lighting model — Lambert plus ambient, against the gouache chunk that discards
+// three's lighting outright — so folding it in would mean every control on this page knowing
+// which of two worlds it was talking to. That reasoning still holds, so this switches PAGES
+// rather than pretending it is a mode.
+//
+// What it buys is that the four are reachable from one control instead of the grass world
+// being a URL you have to know. `/grassworld` is rewritten to the real file by the
+// `cleanRoutes` plugin in vite.config.ts, in dev and preview alike.
 pipelineFolder
-  .add(pipeline, 'scene', ['ocean', 'ramp', 'palette'])
+  .add(pipeline, 'scene', ['ocean', 'ramp', 'palette', 'grass'])
   .name('scene')
   .onChange((v: string) => {
+    if (v === 'grass') {
+      window.location.href = '/grassworld';
+      return;
+    }
     window.location.search = '?scene=' + v + (pipeline.toneMapping === SABOTAGE ? '&tonemap=aces' : '');
   });
 

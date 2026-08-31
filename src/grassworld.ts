@@ -15,7 +15,7 @@ import { TOON_DEFAULT_STEPS, TOON_MAX_STEPS, TOON_MIN_STEPS } from './dev/toonSh
 import { BIRD_DEFAULT_FLAP_RATE } from './dev/grass/Birds';
 import { formatTownReport } from './dev/grass/Town';
 import { GRASS_PRESETS } from './vendor/grassField/presets';
-import { SEA_STATE_NAMES, type SeaStateName } from './art/seaStates';
+import { DEFAULT_SEA_STATE, SEA_STATE_NAMES, type SeaStateName } from './art/seaStates';
 
 /**
  * The aircraft comes from `src/models/`, the same folder the model bench globs,
@@ -155,10 +155,25 @@ function paintReport(): void {
 const isView = (v: string | null): v is GrassViewName =>
   v !== null && (GRASS_VIEW_NAMES as readonly string[]).includes(v);
 
+/** `?sea=` if it names a real sea state, otherwise the project's default. */
+const readSeaState = (v: string | null): SeaStateName =>
+  v !== null && (SEA_STATE_NAMES as readonly string[]).includes(v)
+    ? (v as SeaStateName)
+    : DEFAULT_SEA_STATE;
+
 const params = {
   view: (isView(query.get('view')) ? query.get('view') : 'establishing') as GrassViewName,
   preset: query.get('preset') && GRASS_PRESETS[query.get('preset')!] ? query.get('preset')! : 'default',
-  seaState: (query.get('sea') as SeaStateName | null) ?? 'breeze',
+  // VALIDATED, not cast. This read `(query.get('sea') as SeaStateName) ?? 'breeze'`, and both
+  // halves of that were broken. `breeze` is not a sea state — `SEA_STATES` has only flat,
+  // wavey and choppy — so every visit without an explicit `?sea=` handed `Ocean` a name it
+  // could not look up and died on `SEA_STATES[seaState].glintCoverage` before the first frame.
+  // The cast is what let it through: it asserts the string is a valid name rather than
+  // checking, so `?sea=anything` failed the same way.
+  //
+  // Now it is checked against the real list and falls back to the project's own default, so a
+  // typo in the URL loads the world instead of a blank page.
+  seaState: readSeaState(query.get('sea')),
   material: 'original' as MaterialMode,
   toon: query.get('toon') === '1',
   toonSteps: TOON_DEFAULT_STEPS,
@@ -196,6 +211,21 @@ const params = {
   shadowHelper: false,
   fly: false,
 };
+
+// THE WAY BACK. The main page lists this world in its scene dropdown, so this one carries the
+// same control pointing the other way — otherwise arriving here is a one-way trip and the
+// only exit is editing the URL. The three on the far side are `?scene=` branches of index.html
+// while this is its own entry point (see the header), so leaving means changing PAGE, which is
+// why this is a navigation rather than a mode switch.
+const sceneFolder = debug.gui.addFolder('Scene');
+const sceneNav = { scene: 'grass' };
+sceneFolder
+  .add(sceneNav, 'scene', ['grass', 'ocean', 'ramp', 'palette'])
+  .name('scene')
+  .onChange((v: string) => {
+    if (v === 'grass') return;
+    window.location.href = '/?scene=' + v;
+  });
 
 // First folder in the panel on purpose: this is the one control that changes
 // every surface at once, so it belongs above the per-thing tuning below it.
