@@ -8,6 +8,9 @@ import { makeBarkMaterial } from '../../vendor/grassField/materials/barkMaterial
 import { scatterBlades, scatterFlowers } from '../../vendor/grassField/utils/scatter';
 import { GRASS_PRESETS } from '../../vendor/grassField/presets';
 import { GRASS_DEFAULTS, FLOWER_DEFAULTS, type GrassParams, type FlowerParams } from './grassParams';
+import { MAQUIS, makeMaquisSurface } from './maquis';
+import { makeLeafAtlas } from './leafTexture';
+import { buildShrub } from './shrub';
 import { ProceduralTerrain, scatterPoints, seededRandom, groundDirt, type DirtSettings, type FlatRegion } from './proceduralGround';
 
 /**
@@ -58,6 +61,10 @@ export interface GrassFieldOptions {
   patchesZ?: number;
   /** Trees and rocks per 100 m² of land. */
   treeDensity?: number;
+  /** Maquis stands per 100 m². Denser than the trees — scrub grows as a thicket. */
+  maquisDensity?: number;
+  /** Broadleaf shrubs per 100 m2. Generated, not lifted from the GLB — see shrub.ts. */
+  shrubDensity?: number;
   rockDensity?: number;
   /** World Z at which the ground is exactly at sea level — the waterline. */
   shoreZ?: number;
@@ -113,6 +120,10 @@ export interface GrassFieldStats {
   blades: number;
   flowers: number;
   trees: number;
+  /** Adriatic evergreen maquis stands. A separate community, not small trees. */
+  maquis: number;
+  /** Generated broadleaf shrubs, with independent leaves. */
+  shrubs: number;
   rocks: number;
   treePrototypes: number;
   rockPrototypes: number;
@@ -135,6 +146,8 @@ export class GrassField {
     blades: 0,
     flowers: 0,
     trees: 0,
+    maquis: 0,
+    shrubs: 0,
     rocks: 0,
     treePrototypes: 0,
     rockPrototypes: 0,
@@ -151,6 +164,13 @@ export class GrassField {
   private readonly template: THREE.Group;
   private readonly disposables: Array<{ dispose(): void }> = [];
   private readonly treeProtos: Prototype[] = [];
+  /** Maquis stands, derived from the tree prototypes. See maquis.ts. */
+  private readonly maquisProtos: Prototype[] = [];
+  /** Generated shrubs. See shrub.ts and leafTexture.ts. */
+  private readonly shrubProtos: Prototype[] = [];
+  /** Leaf materials this field created, so maquis clones know which meshes to re-skin. */
+  private readonly leafMaterials = new Set<THREE.Material>();
+  private maquisLeaf: THREE.Material | null = null;
   private readonly rockProtos: Prototype[] = [];
   /** Every placed rock as a world sphere, for the blade shader's trampling. */
   private readonly placedRocks: THREE.Vector4[] = [];
@@ -178,6 +198,8 @@ export class GrassField {
       patchesX: options.patchesX ?? 4,
       patchesZ: options.patchesZ ?? 2,
       treeDensity: options.treeDensity ?? 3.0,
+      maquisDensity: options.maquisDensity ?? 5.5,
+      shrubDensity: options.shrubDensity ?? 4.0,
       rockDensity: options.rockDensity ?? 4.5,
       shoreZ: options.shoreZ ?? (options.centreZ ?? 0) + options.depth / 2,
       waterLevel: options.waterLevel ?? -0.6,
@@ -298,6 +320,9 @@ export class GrassField {
       if (proto && proto.height > 2) this.treeProtos.push(proto);
     }
 
+    this.buildMaquisProtos();
+    this.buildShrubProtos();
+
     this.stats.treePrototypes = this.treeProtos.length;
     this.stats.rockPrototypes = this.rockProtos.length;
 
@@ -354,6 +379,85 @@ export class GrassField {
     return { group, radius: Math.max(size.x, size.z) * 0.5, height: size.y };
   }
 
+  /**
+   * MAQUIS PROTOTYPES, cloned off the trees and re-skinned.
+   *
+   * One leaf material for the whole species, not one per prototype: the shrubs differ from the
+   * pines only in colour, so they can share a single program across every stand. It is built
+   * from the FIRST tree prototype's leaf material, which carries the GLB's alpha texture — the
+   * blade cut-out is the same leaf shape, and only the RGB the shader paints over it changes.
+   *
+   * The clone is deep in materials but shallow in geometry: `THREE.Object3D.clone` shares the
+   * BufferGeometry, so a second species costs no vertex memory at all.
+   */
+  /**
+   * SHRUB PROTOTYPES — generated, not lifted from the GLB.
+   *
+   * The one thing they need from the GLB is a material to borrow the SHAPE of: `makePineLeafMaterial`
+   * cuts its silhouette from the map's alpha, so a broadleaf shrub needs a different alpha and
+   * nothing else. The source material is therefore a bare MeshStandardMaterial carrying the
+   * generated leaf atlas, handed to the same factory the pines use — which means the shrubs
+   * inherit the colour gradient, the shared wind gust, and the depth material that keeps their
+   * shadows the shape of their leaves rather than the shape of their quads.
+   *
+   * Three prototypes off three seeds, so a thicket is not one bush repeated.
+   */
+  private buildShrubProtos(): void {
+    const atlas = makeLeafAtlas();
+    this.disposables.push(atlas);
+
+    // The stand-in the material factory reads `map` and `alphaTest` off. Never rendered.
+    const source = new THREE.MeshStandardMaterial({ map: atlas, alphaTest: 0.5 });
+    this.disposables.push(source);
+
+    const bark = makeBarkMaterial(this.uniforms.bark);
+    this.disposables.push(bark);
+
+    for (let i = 0; i < 3; i++) {
+      // Built once with a placeholder so the leaf geometry exists, then given the real material:
+      // the factory needs the MESH to read its bounding box for the wind's height mask, and the
+      // mesh needs a geometry to have one.
+      const build = buildShrub(source, bark, this.options.seed * 977 + i * 31, {
+        height: 1.15 + i * 0.28,
+        spread: 1.05 + i * 0.12,
+      });
+      const leaf = makePineLeafMaterial(source, build.leafMesh, this.uniforms.surface);
+      this.disposables.push(leaf);
+      build.leafMesh.material = leaf;
+      build.leafMesh.customDepthMaterial = makePineLeafDepthMaterial(source);
+      this.shrubProtos.push({ group: build.group, radius: build.radius, height: build.height });
+    }
+  }
+
+  private buildMaquisProtos(): void {
+    if (this.treeProtos.length === 0) return;
+
+    for (const proto of this.treeProtos) {
+      const group = proto.group.clone();
+      let hasLeaves = false;
+      group.traverse((child) => {
+        const mesh = child as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const current = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+        if (!current || !this.leafMaterials.has(current)) return;
+        if (!this.maquisLeaf) {
+          const leaf = makePineLeafMaterial(
+            current as THREE.MeshStandardMaterial,
+            mesh,
+            makeMaquisSurface(this.uniforms.surface),
+          );
+          this.disposables.push(leaf);
+          this.maquisLeaf = leaf;
+        }
+        mesh.material = this.maquisLeaf;
+        hasLeaves = true;
+      });
+      // A cluster whose foliage did not resolve would render as a bare trunk squashed into the
+      // ground, which reads as damage rather than as a shrub.
+      if (hasLeaves) this.maquisProtos.push({ group, radius: proto.radius, height: proto.height });
+    }
+  }
+
   /** The vendored material swap, by name. Built once per prototype and shared by
    *  every copy of it, so N trees of one shape still compile one program. */
   private materialFor(source: THREE.Mesh): THREE.Material {
@@ -364,6 +468,10 @@ export class GrassField {
     if (materials.some((m) => m.name === o.leafMaterial)) {
       const leaf = makePineLeafMaterial(first, source, this.uniforms.surface);
       this.disposables.push(leaf);
+      // Recorded so `buildMaquisProtos` can tell foliage from bark on a cloned prototype. The
+      // clone carries material REFERENCES, and after the vendored swap the leaf material no
+      // longer answers to the GLB's material name, so identity is the only reliable test.
+      this.leafMaterials.add(leaf);
       return leaf;
     }
     if (materials.some((m) => m.name === o.trunkMaterial)) {
@@ -525,6 +633,91 @@ export class GrassField {
       trees++;
     }
 
+    // ── Maquis ───────────────────────────────────────────────────────────────
+    // THE OPPOSITE GROUND TO THE TREES, deliberately. Maquis is the community that holds the
+    // dry, thin, exposed, rocky slopes a forest has given up on, so this inverts the pines'
+    // preferences instead of sharing them: it takes steeper ground (0.72 against their 0.45),
+    // it is drawn TOWARD the bare-earth mask they are pushed away from, and it comes nearer the
+    // shore. Scattering it on the same ground with the same weights would have produced small
+    // trees among big ones; competing for different ground is what makes it a second plant.
+    //
+    // It still keeps out of the rocks and the clearing — a shrub growing from a boulder is the
+    // same tell a pine growing from one is.
+    const maquisPoints = scatterPoints(
+      land,
+      {
+        count: Math.round((area / 100) * o.maquisDensity),
+        minDistance: MAQUIS.minDistance,
+        reject: (x, z) => {
+          if (inClearing(x, z) || onShelf(x, z) || this.terrain.slopeAt(x, z) > MAQUIS.maxSlope) return true;
+          // Closer to the water than a pine will go, but not onto the sand itself.
+          if (z > o.shoreZ - 3.0) return true;
+          for (const rock of this.placedRocks) {
+            if ((rock.x - x) ** 2 + (rock.z - z) ** 2 < (rock.w + 0.5) ** 2) return true;
+          }
+          return false;
+        },
+        weight: (x, z) => (0.3 + 0.7 * groundDirt(x, z, dirt)) * clearingFringe(x, z),
+      },
+      rng,
+    );
+
+    let maquis = 0;
+    for (const point of maquisPoints) {
+      const proto = this.maquisProtos[Math.floor(rng() * this.maquisProtos.length)];
+      if (!proto) break;
+      const instance = proto.group.clone();
+      // ANISOTROPIC on purpose: squashed down and spread out. A uniformly smaller tree is a
+      // sapling, which is a different thing entirely — the low broad silhouette is most of what
+      // says "scrub" at any distance where the leaves themselves are not resolvable.
+      const h = MAQUIS.heightScale[0] + rng() * (MAQUIS.heightScale[1] - MAQUIS.heightScale[0]);
+      const w = MAQUIS.widthScale[0] + rng() * (MAQUIS.widthScale[1] - MAQUIS.widthScale[0]);
+      instance.position.set(
+        point.x,
+        this.terrain.heightAt(point.x, point.y) - MAQUIS.sink * h,
+        point.y,
+      );
+      instance.rotation.y = rng() * Math.PI * 2;
+      instance.scale.set(w, h, w);
+      this.group.add(instance);
+      maquis++;
+    }
+
+    // ── Shrubs ───────────────────────────────────────────────────────────────
+    // Placed like the trees rather than like the maquis: shrubs are a broadleaf understorey,
+    // so they want the same sheltered, greener ground the pines take, and they fill in beneath
+    // and between them. The only real difference is that they are allowed closer to each other
+    // and are not pushed off the bare earth as hard, because a shrub is what colonises a gap.
+    const shrubPoints = scatterPoints(
+      land,
+      {
+        count: Math.round((area / 100) * o.shrubDensity),
+        minDistance: 2.1,
+        reject: (x, z) => {
+          if (nearShore(z) || inClearing(x, z) || onShelf(x, z) || this.terrain.slopeAt(x, z) > 0.55) return true;
+          for (const rock of this.placedRocks) {
+            if ((rock.x - x) ** 2 + (rock.z - z) ** 2 < (rock.w + 0.6) ** 2) return true;
+          }
+          return false;
+        },
+        weight: (x, z) => (1 - 0.45 * groundDirt(x, z, dirt)) * clearingFringe(x, z),
+      },
+      rng,
+    );
+
+    let shrubs = 0;
+    for (const point of shrubPoints) {
+      const proto = this.shrubProtos[Math.floor(rng() * this.shrubProtos.length)];
+      if (!proto) break;
+      const instance = proto.group.clone();
+      const scale = 0.8 + rng() * 0.5;
+      instance.position.set(point.x, this.terrain.heightAt(point.x, point.y) - 0.08, point.y);
+      instance.rotation.y = rng() * Math.PI * 2;
+      instance.scale.setScalar(scale);
+      this.group.add(instance);
+      shrubs++;
+    }
+
     // ── Ground patches, blades, flowers ──────────────────────────────────────
     let blades = 0;
     let flowers = 0;
@@ -612,6 +805,8 @@ export class GrassField {
     this.stats.blades = blades;
     this.stats.flowers = flowers;
     this.stats.trees = trees;
+    this.stats.maquis = maquis;
+    this.stats.shrubs = shrubs;
     this.stats.rocks = this.placedRocks.length;
     this.stats.clearing = clearing;
     this.stats.flat = o.flat;

@@ -142,6 +142,8 @@ function paintReport(): void {
     'land        ' + size.x.toFixed(1) + ' x ' + size.z.toFixed(1) + ' m  (8 tiles of ' + s.tileSize.x.toFixed(1) + ' m)',
     'water       ' + water.x.toFixed(1) + ' x ' + water.z.toFixed(1) + ' m  (4 tiles)',
     'generated   ' + s.trees + ' trees from ' + s.treePrototypes + ' shapes, ' + s.rocks + ' rocks from ' + s.rockPrototypes,
+    'maquis      ' + s.maquis + ' evergreen scrub stands',
+    'shrubs      ' + s.shrubs + ' generated, ' + (s.shrubs * 320).toLocaleString() + ' independent leaves',
     'scattered   ' + s.blades.toLocaleString() + ' blades   ' + s.flowers.toLocaleString() + ' flowers   ' + s.patches + ' patches',
     'sea level   ' + scene.waterLevel.toFixed(2) + ' m   depth ramp x' + scene.depthExaggeration,
     '',
